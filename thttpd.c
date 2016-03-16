@@ -1,6 +1,6 @@
 /* thttpd.c - tiny/turbo/throttling HTTP server
 **
-** Copyright © 1995,1998,1999,2000,2001,2015 by
+** Copyright ï¿½ 1995,1998,1999,2000,2001,2015 by
 ** Jef Poskanzer <jef@mail.acme.com>. All rights reserved.
 **
 ** Redistribution and use in source and binary forms, with or without
@@ -109,6 +109,7 @@ typedef struct {
     httpd_conn* hc;
     int tnums[MAXTHROTTLENUMS];         /* throttle indexes */
     int numtnums;
+    int keep_alive;
     long max_limit, min_limit;
     time_t started_at, active_at;
     Timer* wakeup_timer;
@@ -160,8 +161,8 @@ static void handle_linger( connecttab* c, struct timeval* tvP );
 static int check_throttles( connecttab* c );
 static void clear_throttles( connecttab* c, struct timeval* tvP );
 static void update_throttles( ClientData client_data, struct timeval* nowP );
-static void finish_connection( connecttab* c, struct timeval* tvP );
-static void clear_connection( connecttab* c, struct timeval* tvP );
+static void finish_connection( connecttab* c, struct timeval* tvP, int doKeep );
+static void clear_connection( connecttab* c, struct timeval* tvP, int doKepp );
 static void really_clear_connection( connecttab* c, struct timeval* tvP );
 static void idle( ClientData client_data, struct timeval* nowP );
 static void wakeup_connection( ClientData client_data, struct timeval* nowP );
@@ -822,7 +823,7 @@ main( int argc, char** argv )
 	    hc = c->hc;
 	    if ( ! fdwatch_check_fd( hc->conn_fd ) )
 		/* Something went wrong. */
-		clear_connection( c, &tv );
+		clear_connection( c, &tv, 0 );
 	    else
 		switch ( c->conn_state )
 		    {
@@ -1490,8 +1491,10 @@ shut_down( void )
     logstats( &tv );
     for ( cnum = 0; cnum < max_connects; ++cnum )
 	{
-	if ( connects[cnum].conn_state != CNST_FREE )
+	if ( connects[cnum].conn_state != CNST_FREE ) {
+        httpd_complete_request( connects[cnum].hc, &tv, 1 );
 	    httpd_close_conn( connects[cnum].hc, &tv );
+    }
 	if ( connects[cnum].hc != (httpd_conn*) 0 )
 	    {
 	    httpd_destroy_conn( connects[cnum].hc );
@@ -1590,6 +1593,7 @@ handle_newconnect( struct timeval* tvP, int listen_fd, int is_sctp )
 	c->linger_timer = (Timer*) 0;
 	c->next_byte_index = 0;
 	c->numtnums = 0;
+    c->keep_alive = 0;
 
 	/* Set the connection file descriptor to no-delay mode. */
 	httpd_set_ndelay( c->hc->conn_fd );
@@ -1623,7 +1627,7 @@ handle_read( connecttab* c, struct timeval* tvP )
 	if ( hc->read_size > 5000 )
 	    {
 	    httpd_send_err( hc, 400, httpd_err400title, "", httpd_err400form, "" );
-	    finish_connection( c, tvP );
+	    finish_connection( c, tvP, 0 );
 	    return;
 	    }
 	httpd_realloc_str(
@@ -1636,9 +1640,13 @@ handle_read( connecttab* c, struct timeval* tvP )
 	hc->read_size - hc->read_idx );
     if ( sz == 0 )
 	{
-	httpd_send_err( hc, 400, httpd_err400title, "", httpd_err400form, "" );
-	finish_connection( c, tvP );
-	return;
+        if (! c->keep_alive)
+        {
+	       httpd_send_err( hc, 400, httpd_err400title, "", httpd_err400form, "" );
+        }
+
+        finish_connection( c, tvP, 0);
+        return;
 	}
     if ( sz < 0 )
 	{
@@ -1648,14 +1656,38 @@ handle_read( connecttab* c, struct timeval* tvP )
 	** happen if a packet gets garbled.
 	*/
 	if ( errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK )
-	    return;
-	httpd_send_err(
-	    hc, 400, httpd_err400title, "", httpd_err400form, "" );
-	finish_connection( c, tvP );
-	return;
+	    //return; xxx felix: wieso hier return?
+    	httpd_send_err(
+    	    hc, 400, httpd_err400title, "", httpd_err400form, "" );
+    	finish_connection( c, tvP, 0 );
+    	return;
 	}
     hc->read_idx += sz;
     c->active_at = tvP->tv_sec;
+
+    /*
+    ** if we start getting new data on this socket, "promote" it
+    **  to read timeout
+    */
+    if ( hc->keep_alive ) {
+        if ( c->idle_read_timer != (Timer*) 0 )
+        {
+        tmr_cancel( c->idle_read_timer );
+        c->idle_read_timer = 0;
+        }
+
+    client_data.p = c;
+    c->idle_read_timer = tmr_create(
+        tvP, idle_read_connection, client_data, IDLE_READ_TIMELIMIT * 1000L,
+        0 );
+    if ( c->idle_read_timer == (Timer*) 0 )
+        {
+        syslog( LOG_CRIT, "tmr_create(idle_read_connection) failed" );
+        exit( 1 );
+        }
+
+        hc->keep_alive = 0;
+    }
 
     /* Do we have a complete request yet? */
     switch ( httpd_got_request( hc ) )
@@ -1664,14 +1696,14 @@ handle_read( connecttab* c, struct timeval* tvP )
 	return;
 	case GR_BAD_REQUEST:
 	httpd_send_err( hc, 400, httpd_err400title, "", httpd_err400form, "" );
-	finish_connection( c, tvP );
+	finish_connection( c, tvP, 0 );
 	return;
 	}
 
     /* Yes.  Try parsing and resolving it. */
     if ( httpd_parse_request( hc ) < 0 )
 	{
-	finish_connection( c, tvP );
+	finish_connection( c, tvP, 0 );
 	return;
 	}
 
@@ -1680,7 +1712,7 @@ handle_read( connecttab* c, struct timeval* tvP )
 	{
 	httpd_send_err(
 	    hc, 503, httpd_err503title, "", httpd_err503form, hc->encodedurl );
-	finish_connection( c, tvP );
+	finish_connection( c, tvP, 0 );
 	return;
 	}
 
@@ -1688,7 +1720,7 @@ handle_read( connecttab* c, struct timeval* tvP )
     if ( httpd_start_request( hc, tvP ) < 0 )
 	{
 	/* Something went wrong.  Close down the connection. */
-	finish_connection( c, tvP );
+	finish_connection( c, tvP, 0 );
 	return;
 	}
 
@@ -1711,13 +1743,13 @@ handle_read( connecttab* c, struct timeval* tvP )
 	for ( tind = 0; tind < c->numtnums; ++tind )
 	    throttles[c->tnums[tind]].bytes_since_avg += hc->bytes_sent;
 	c->next_byte_index = hc->bytes_sent;
-	finish_connection( c, tvP );
+	finish_connection( c, tvP, 0 );
 	return;
 	}
     if ( c->next_byte_index >= c->end_byte_index )
 	{
 	/* There's nothing to send. */
-	finish_connection( c, tvP );
+	finish_connection( c, tvP, 0 );
 	return;
 	}
 
@@ -1871,7 +1903,7 @@ handle_send( connecttab* c, struct timeval* tvP )
 	*/
 	if ( errno != EPIPE && errno != EINVAL && errno != ECONNRESET )
 	    syslog( LOG_ERR, "write - %m sending %.80s", hc->encodedurl );
-	clear_connection( c, tvP );
+	clear_connection( c, tvP, 0 );
 	return;
 	}
 
@@ -1906,7 +1938,7 @@ handle_send( connecttab* c, struct timeval* tvP )
     if ( c->next_byte_index >= c->end_byte_index )
 	{
 	/* This connection is finished! */
-	finish_connection( c, tvP );
+	finish_connection( c, tvP, 1 );
 	return;
 	}
 
@@ -2065,25 +2097,25 @@ update_throttles( ClientData client_data, struct timeval* nowP )
 
 
 static void
-finish_connection( connecttab* c, struct timeval* tvP )
+finish_connection( connecttab* c, struct timeval* tvP, int doKeep )
     {
     /* If we haven't actually sent the buffered response yet, do so now. */
     httpd_write_response( c->hc );
 
     /* And clear. */
-    clear_connection( c, tvP );
+    clear_connection( c, tvP, doKeep );
     }
 
 
 static void
-clear_connection( connecttab* c, struct timeval* tvP )
+clear_connection( connecttab* c, struct timeval* tvP, int doKeep )
     {
     ClientData client_data;
+    int	linger;
 
-    if ( c->wakeup_timer != (Timer*) 0 )
-	{
-	tmr_cancel( c->wakeup_timer );
-	c->wakeup_timer = 0;
+    if ( c->wakeup_timer != (Timer*) 0 ) {
+    	tmr_cancel( c->wakeup_timer );
+    	c->wakeup_timer = 0;
 	}
 
     /* This is our version of Apache's lingering_close() routine, which is
@@ -2097,34 +2129,64 @@ clear_connection( connecttab* c, struct timeval* tvP )
     ** circumstances that make a lingering close necessary.  If the flag
     ** isn't set we do the real close now.
     */
-    if ( c->conn_state == CNST_LINGERING )
-	{
-	/* If we were already lingering, shut down for real. */
-	tmr_cancel( c->linger_timer );
-	c->linger_timer = (Timer*) 0;
-	c->hc->should_linger = 0;
+
+
+    if ( c->conn_state == CNST_LINGERING ) {
+    	/* If we were already lingering, shut down for real. */
+    	tmr_cancel( c->linger_timer );
+    	c->linger_timer = (Timer*) 0;
+    	c->hc->should_linger = 0;
 	}
-    if ( c->hc->should_linger )
-	{
-	if ( c->conn_state != CNST_PAUSING )
-	    fdwatch_del_fd( c->hc->conn_fd );
-	c->conn_state = CNST_LINGERING;
-	shutdown( c->hc->conn_fd, SHUT_WR );
-	fdwatch_add_fd( c->hc->conn_fd, c, FDW_READ );
-	client_data.p = c;
-	if ( c->linger_timer != (Timer*) 0 )
-	    syslog( LOG_ERR, "replacing non-null linger_timer!" );
-	c->linger_timer = tmr_create(
-	    tvP, linger_clear_connection, client_data, LINGER_TIME, 0 );
-	if ( c->linger_timer == (Timer*) 0 )
-	    {
-	    syslog( LOG_CRIT, "tmr_create(linger_clear_connection) failed" );
-	    exit( 1 );
-	    }
-	}
-    else
-	really_clear_connection( c, tvP );
+
+    if ( c->hc->do_keep_alive && doKeep) {
+        c->conn_state = CNST_READING;
+
+        client_data.p = c;
+        c->idle_read_timer = tmr_create( tvP, idle_read_connection, client_data, IDLE_KEEPALIVE_TIMELIMIT * 1000L, 0 );
+        if ( c->idle_read_timer == (Timer*) 0 ) {
+            syslog( LOG_CRIT, "tmr_create(idle_read_connection) failed" );
+            exit( 1 );
+        }
+
+        c->bytes_sent = 0;
+        c->numtnums = 0;
+        c->keep_alive = 1;
+
+        httpd_complete_request( c->hc, tvP, 1 );
+
+        fdwatch_del_fd( c->hc->conn_fd );
+        fdwatch_add_fd( c->hc->conn_fd, c, FDW_READ );
+
+        httpd_request_reset( c->hc );
+        /* Make sure we are still in no-delay mode. */
+        httpd_set_ndelay( c->hc->conn_fd );
     }
+    else if ( c->hc->should_linger ) {
+    	if ( c->conn_state != CNST_PAUSING )
+    	    fdwatch_del_fd( c->hc->conn_fd );
+
+        c->conn_state = CNST_LINGERING;
+    	shutdown( c->hc->conn_fd, SHUT_WR );
+    	fdwatch_add_fd( c->hc->conn_fd, c, FDW_READ );
+    	client_data.p = c;
+    	if ( c->linger_timer != (Timer*) 0 )
+    	    syslog( LOG_ERR, "replacing non-null linger_timer!" );
+
+        c->linger_timer = tmr_create(
+    	    tvP, linger_clear_connection, client_data, LINGER_TIME, 0 );
+
+        if ( c->linger_timer == (Timer*) 0 ) {
+    	    syslog( LOG_CRIT, "tmr_create(linger_clear_connection) failed" );
+    	    exit( 1 );
+    	}
+
+        httpd_complete_request( c->hc, tvP, 1 );
+	}
+    else {
+        httpd_complete_request( c->hc, tvP, !c->keep_alive );
+        really_clear_connection( c, tvP );
+    }
+}
 
 
 static void
@@ -2159,26 +2221,23 @@ idle( ClientData client_data, struct timeval* nowP )
 	switch ( c->conn_state )
 	    {
 	    case CNST_READING:
-	    if ( nowP->tv_sec - c->active_at >= IDLE_READ_TIMELIMIT )
-		{
-		syslog( LOG_INFO,
-		    "%.80s connection timed out reading",
-		    httpd_ntoa( &c->hc->client_addr ) );
-		httpd_send_err(
-		    c->hc, 408, httpd_err408title, "", httpd_err408form, "" );
-		finish_connection( c, nowP );
-		}
-	    break;
+    	    if ( nowP->tv_sec - c->active_at >= IDLE_READ_TIMELIMIT ) {
+                if (! c->keep_alive) {
+        		    syslog( LOG_INFO, "%.80s connection timed out reading", httpd_ntoa( &c->hc->client_addr ) );
+        		    httpd_send_err( c->hc, 408, httpd_err408title, "", httpd_err408form, "" );
+                }
+        		finish_connection( c, nowP, 0 );
+    		}
+    	    break;
 	    case CNST_SENDING:
 	    case CNST_PAUSING:
-	    if ( nowP->tv_sec - c->active_at >= IDLE_SEND_TIMELIMIT )
-		{
-		syslog( LOG_INFO,
-		    "%.80s connection timed out sending",
-		    httpd_ntoa( &c->hc->client_addr ) );
-		clear_connection( c, nowP );
-		}
-	    break;
+    	    if ( nowP->tv_sec - c->active_at >= IDLE_SEND_TIMELIMIT ) {
+        		syslog( LOG_INFO,
+        		    "%.80s connection timed out sending",
+        		    httpd_ntoa( &c->hc->client_addr ) );
+        		clear_connection( c, nowP, 0 );
+    		}
+    	    break;
 	    }
 	}
     }

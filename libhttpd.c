@@ -895,7 +895,7 @@ send_mime( httpd_conn* hc, int status, char* title, char* encodings, char* extra
 	(void) my_snprintf(
 	    fixed_type, sizeof(fixed_type), type, hc->hs->charset );
 	(void) my_snprintf( buf, sizeof(buf),
-	    "%.20s %d %s\015\012Server: %s\015\012Content-Type: %s\015\012Date: %s\015\012Last-Modified: %s\015\012Accept-Ranges: bytes\015\012Connection: close\015\012",
+	    "%.20s %d %s\015\012Server: %s\015\012Content-Type: %s\015\012Date: %s\015\012Last-Modified: %s\015\012Accept-Ranges: bytes\015\012",
 	    hc->protocol, status, title, EXPOSED_SERVER_SOFTWARE, fixed_type,
 	    nowbuf, modbuf );
 	add_response( hc, buf );
@@ -928,6 +928,16 @@ send_mime( httpd_conn* hc, int status, char* title, char* encodings, char* extra
 		"Content-Length: %lld\015\012", (long long) length );
 	    add_response( hc, buf );
 	    }
+    else {
+		hc->do_keep_alive = 0;
+	}
+
+	if (hc->do_keep_alive) {
+	    add_response( hc, "Connection: keep-alive\r\n" );
+	} else {
+	    add_response( hc, "Connection: close\r\n" );
+	}
+
 	if ( hc->hs->p3p[0] != '\0' )
 	    {
 	    (void) my_snprintf( buf, sizeof(buf), "P3P: %s\015\012", hc->hs->p3p );
@@ -950,6 +960,7 @@ send_mime( httpd_conn* hc, int status, char* title, char* encodings, char* extra
 		hc->hs->max_age, expbuf );
 	    add_response( hc, buf );
 	    }
+
 	if ( extraheads[0] != '\0' )
 	    add_response( hc, extraheads );
 	add_response( hc, "\015\012" );
@@ -1920,6 +1931,105 @@ expand_symlinks( char* path, char** restP, int no_symlink_check, int tildemapped
     return checked;
     }
 
+int
+httpd_request_reset(httpd_conn* hc )
+    {
+    hc->read_idx = 0;
+    hc->checked_idx = 0;
+    hc->checked_state = CHST_FIRSTWORD;
+    hc->method = METHOD_UNKNOWN;
+    hc->status = 0;
+    hc->bytes_to_send = 0;
+    hc->bytes_sent = 0;
+    hc->encodedurl = "";
+    hc->decodedurl[0] = '\0';
+    hc->protocol = "UNKNOWN";
+    hc->origfilename[0] = '\0';
+    hc->expnfilename[0] = '\0';
+    hc->encodings[0] = '\0';
+    hc->pathinfo[0] = '\0';
+    hc->query[0] = '\0';
+    hc->referer = "";
+    hc->useragent = "";
+    hc->accept[0] = '\0';
+    hc->accepte[0] = '\0';
+    hc->acceptl = "";
+    hc->cookie = "";
+    hc->contenttype = "";
+    hc->reqhost[0] = '\0';
+    hc->hdrhost = "";
+    hc->hostdir[0] = '\0';
+    hc->authorization = "";
+    hc->remoteuser[0] = '\0';
+    hc->response[0] = '\0';
+#ifdef TILDE_MAP_2
+    hc->altdir[0] = '\0';
+#endif /* TILDE_MAP_2 */
+    hc->responselen = 0;
+    hc->if_modified_since = (time_t) -1;
+    hc->range_if = (time_t) -1;
+    hc->contentlength = -1;
+    hc->type = "";
+    hc->hostname = (char*) 0;
+    hc->mime_flag = 1;
+    hc->one_one = 0;
+    hc->got_range = 0;
+    hc->tildemapped = 0;
+    hc->init_byte_loc = 0;
+    hc->end_byte_loc = -1;
+    hc->keep_alive = 0;
+    hc->do_keep_alive = 0;
+    hc->should_linger = 0;
+    hc->file_address = (char*) 0;
+#ifdef USE_SCTP
+    hc->is_sctp = is_sctp;
+    if ( is_sctp )
+	{
+	sz = (socklen_t)sizeof(struct sctp_status);
+	if ( getsockopt(hc->conn_fd, IPPROTO_SCTP, SCTP_STATUS, &status, &sz) < 0 )
+	    {
+	    syslog( LOG_CRIT, "getsockopt SCTP_STATUS - %m" );
+	    close( hc->conn_fd );
+	    hc->conn_fd = -1;
+	    return GC_FAIL;
+	    }
+	hc->no_i_streams = status.sstat_instrms;
+	hc->no_o_streams = status.sstat_outstrms;
+	sz = (socklen_t)sizeof(int);
+	if ( getsockopt(hc->conn_fd, SOL_SOCKET, SO_SNDBUF, &sb_size, &sz) < 0 )
+	    {
+	    syslog( LOG_CRIT, "getsockopt SO_SNDBUF - %m" );
+	    close( hc->conn_fd );
+	    hc->conn_fd = -1;
+	    return GC_FAIL;
+	    }
+	hc->send_at_once_limit = sb_size / 4;
+#ifdef SCTP_EXPLICIT_EOR
+	sz = (socklen_t)sizeof(int);
+	if ( setsockopt(hc->conn_fd, IPPROTO_SCTP, SCTP_EXPLICIT_EOR, &on, sz) < 0 )
+	    {
+	    syslog( LOG_CRIT, "getsockopt SCTP_EXPLICIT_EOR - %m" );
+	    close( hc->conn_fd );
+	    hc->conn_fd = -1;
+	    return GC_FAIL;
+	    }
+	hc->use_eeor = 1;
+#else
+	hc->use_eeor = 0;
+#endif
+	}
+    else
+	{
+	hc->no_i_streams = 0;
+	hc->no_o_streams = 0;
+	hc->send_at_once_limit = 0;
+	hc->use_eeor = 0;
+	}
+#endif
+    return GC_OK;
+    }
+
+
 
 int
 httpd_get_conn( httpd_server* hs, int listen_fd, httpd_conn* hc, int is_sctp )
@@ -1989,98 +2099,8 @@ httpd_get_conn( httpd_server* hs, int listen_fd, httpd_conn* hc, int is_sctp )
     hc->hs = hs;
     (void) memset( &hc->client_addr, 0, sizeof(hc->client_addr) );
     (void) memmove( &hc->client_addr, &sa, sockaddr_len( &sa ) );
-    hc->read_idx = 0;
-    hc->checked_idx = 0;
-    hc->checked_state = CHST_FIRSTWORD;
-    hc->method = METHOD_UNKNOWN;
-    hc->status = 0;
-    hc->bytes_to_send = 0;
-    hc->bytes_sent = 0;
-    hc->encodedurl = "";
-    hc->decodedurl[0] = '\0';
-    hc->protocol = "UNKNOWN";
-    hc->origfilename[0] = '\0';
-    hc->expnfilename[0] = '\0';
-    hc->encodings[0] = '\0';
-    hc->pathinfo[0] = '\0';
-    hc->query[0] = '\0';
-    hc->referrer = "";
-    hc->useragent = "";
-    hc->accept[0] = '\0';
-    hc->accepte[0] = '\0';
-    hc->acceptl = "";
-    hc->cookie = "";
-    hc->contenttype = "";
-    hc->reqhost[0] = '\0';
-    hc->hdrhost = "";
-    hc->hostdir[0] = '\0';
-    hc->authorization = "";
-    hc->remoteuser[0] = '\0';
-    hc->response[0] = '\0';
-#ifdef TILDE_MAP_2
-    hc->altdir[0] = '\0';
-#endif /* TILDE_MAP_2 */
-    hc->responselen = 0;
-    hc->if_modified_since = (time_t) -1;
-    hc->range_if = (time_t) -1;
-    hc->contentlength = -1;
-    hc->type = "";
-    hc->hostname = (char*) 0;
-    hc->mime_flag = 1;
-    hc->one_one = 0;
-    hc->got_range = 0;
-    hc->tildemapped = 0;
-    hc->first_byte_index = 0;
-    hc->last_byte_index = -1;
-    hc->keep_alive = 0;
-    hc->should_linger = 0;
-    hc->file_address = (char*) 0;
-#ifdef USE_SCTP
-    hc->is_sctp = is_sctp;
-    if ( is_sctp )
-	{
-	sz = (socklen_t)sizeof(struct sctp_status);
-	if ( getsockopt(hc->conn_fd, IPPROTO_SCTP, SCTP_STATUS, &status, &sz) < 0 )
-	    {
-	    syslog( LOG_CRIT, "getsockopt SCTP_STATUS - %m" );
-	    close( hc->conn_fd );
-	    hc->conn_fd = -1;
-	    return GC_FAIL;
-	    }
-	hc->no_i_streams = status.sstat_instrms;
-	hc->no_o_streams = status.sstat_outstrms;
-	sz = (socklen_t)sizeof(int);
-	if ( getsockopt(hc->conn_fd, SOL_SOCKET, SO_SNDBUF, &sb_size, &sz) < 0 )
-	    {
-	    syslog( LOG_CRIT, "getsockopt SO_SNDBUF - %m" );
-	    close( hc->conn_fd );
-	    hc->conn_fd = -1;
-	    return GC_FAIL;
-	    }
-	hc->send_at_once_limit = sb_size / 4;
-#ifdef SCTP_EXPLICIT_EOR
-	sz = (socklen_t)sizeof(int);
-	if ( setsockopt(hc->conn_fd, IPPROTO_SCTP, SCTP_EXPLICIT_EOR, &on, sz) < 0 )
-	    {
-	    syslog( LOG_CRIT, "getsockopt SCTP_EXPLICIT_EOR - %m" );
-	    close( hc->conn_fd );
-	    hc->conn_fd = -1;
-	    return GC_FAIL;
-	    }
-	hc->use_eeor = 1;
-#else
-	hc->use_eeor = 0;
-#endif
-	}
-    else
-	{
-	hc->no_i_streams = 0;
-	hc->no_o_streams = 0;
-	hc->send_at_once_limit = 0;
-	hc->use_eeor = 0;
-	}
-#endif
-    return GC_OK;
+
+    return httpd_request_reset(hc);
     }
 
 
@@ -2534,6 +2554,7 @@ httpd_parse_request( httpd_conn* hc )
 		cp = &buf[11];
 		cp += strspn( cp, " \t" );
 		if ( strcasecmp( cp, "keep-alive" ) == 0 )
+            hc->do_keep_alive = 1;
 		    hc->keep_alive = 1;
 		}
 #ifdef LOG_UNKNOWN_HEADERS
@@ -2761,17 +2782,23 @@ de_dotdot( char* file )
 	}
     }
 
-
 void
-httpd_close_conn( httpd_conn* hc, struct timeval* nowP )
+httpd_complete_request( httpd_conn* hc, struct timeval* nowP, int logit )
     {
-    make_log_entry( hc, nowP );
+    if (logit)
+	    make_log_entry( hc, nowP );
 
     if ( hc->file_address != (char*) 0 )
 	{
 	mmc_unmap( hc->file_address, &(hc->sb), nowP );
 	hc->file_address = (char*) 0;
 	}
+    }
+
+
+void
+httpd_close_conn( httpd_conn* hc, struct timeval* nowP )
+    {
     if ( hc->conn_fd >= 0 )
 	{
 	(void) close( hc->conn_fd );
@@ -4024,6 +4051,12 @@ cgi( httpd_conn* hc )
     {
     int r;
     ClientData client_data;
+
+    /*
+    **  We are not going to leave the socket open after a CGI... too hard
+    **  xxx felix: We're harder!
+    */
+    //hc->do_keep_alive = 0;
 
     if ( hc->method == METHOD_GET || hc->method == METHOD_POST )
 	{

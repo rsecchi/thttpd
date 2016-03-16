@@ -1,6 +1,6 @@
 /* config.h - configuration defines for thttpd and libhttpd
 **
-** Copyright © 1995,1998,1999,2000,2001 by Jef Poskanzer <jef@mail.acme.com>.
+** Copyright ï¿½ 1995,1998,1999,2000,2001 by Jef Poskanzer <jef@mail.acme.com>.
 ** All rights reserved.
 **
 ** Redistribution and use in source and binary forms, with or without
@@ -91,6 +91,11 @@
 ** on a new connection.
 */
 #define IDLE_READ_TIMELIMIT 60
+
+/* CONFIGURE: How many seconds to allow for reading the subsequent requests
+** on a keep-alive connection.  Should be simiar to LINGER_TIME
+*/
+#define IDLE_KEEPALIVE_TIMELIMIT 2
 
 /* CONFIGURE: How many seconds before an idle connection gets closed.
 */

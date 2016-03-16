@@ -1,6 +1,6 @@
 /* fdwatch.c - fd watcher routines, either select() or poll()
 **
-** Copyright © 1999,2000 by Jef Poskanzer <jef@mail.acme.com>.
+** Copyright ï¿½ 1999,2000 by Jef Poskanzer <jef@mail.acme.com>.
 ** All rights reserved.
 **
 ** Redistribution and use in source and binary forms, with or without
@@ -45,6 +45,8 @@
 #include <sys/poll.h>
 #endif /* HAVE_SYS_POLL_H */
 #endif /* HAVE_POLL_H */
+
+#undef HAVE_POLL
 
 #ifdef HAVE_SYS_DEVPOLL_H
 #include <sys/devpoll.h>
@@ -388,7 +390,7 @@ kqueue_check_fd( int fd )
 	syslog( LOG_ERR, "bad ridx (%d) in kqueue_check_fd!", ridx );
 	return 0;
 	}
-    if ( ridx >= nreturned ) 
+    if ( ridx >= nreturned )
 	return 0;
     if ( kqrevents[ridx].ident != fd )
 	return 0;
