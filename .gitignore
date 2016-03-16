@@ -5,3 +5,13 @@ config.cache
 config.log
 config.status
 Makefile
+fdwatch.o
+libhttpd.o
+match.o
+mime_encodings.h
+mime_types.h
+mmc.o
+tdate_parse.o
+thttpd
+thttpd.o
+timers.o
