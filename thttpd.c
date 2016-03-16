@@ -1670,21 +1670,22 @@ handle_read( connecttab* c, struct timeval* tvP )
     **  to read timeout
     */
     if ( hc->keep_alive ) {
-        if ( c->idle_read_timer != (Timer*) 0 )
-        {
-        tmr_cancel( c->idle_read_timer );
-        c->idle_read_timer = 0;
-        }
+        /*
+        if ( c->idle_read_timer != (Timer*) 0 ) {
+            tmr_cancel( c->idle_read_timer );
+            c->idle_read_timer = 0;
+        }*/
 
-    client_data.p = c;
-    c->idle_read_timer = tmr_create(
-        tvP, idle_read_connection, client_data, IDLE_READ_TIMELIMIT * 1000L,
-        0 );
-    if ( c->idle_read_timer == (Timer*) 0 )
-        {
-        syslog( LOG_CRIT, "tmr_create(idle_read_connection) failed" );
-        exit( 1 );
-        }
+        client_data.p = c;
+
+        /*
+        c->idle_read_timer = tmr_create( tvP, idle_read_connection, client_data, IDLE_READ_TIMELIMIT * 1000L, 0 );
+
+
+        if ( c->idle_read_timer == (Timer*) 0 ) {
+            syslog( LOG_CRIT, "tmr_create(idle_read_connection) failed" );
+            exit( 1 );
+        }*/
 
         hc->keep_alive = 0;
     }
@@ -2142,13 +2143,14 @@ clear_connection( connecttab* c, struct timeval* tvP, int doKeep )
         c->conn_state = CNST_READING;
 
         client_data.p = c;
+        /*
         c->idle_read_timer = tmr_create( tvP, idle_read_connection, client_data, IDLE_KEEPALIVE_TIMELIMIT * 1000L, 0 );
-        if ( c->idle_read_timer == (Timer*) 0 ) {
+        if ( c->idle_read_timer == (Timer*) 0 ){
             syslog( LOG_CRIT, "tmr_create(idle_read_connection) failed" );
             exit( 1 );
-        }
+        }*/
 
-        c->bytes_sent = 0;
+        c->hc->bytes_sent = 0;
         c->numtnums = 0;
         c->keep_alive = 1;
 
