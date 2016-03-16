@@ -1949,7 +1949,7 @@ httpd_request_reset(httpd_conn* hc )
     hc->encodings[0] = '\0';
     hc->pathinfo[0] = '\0';
     hc->query[0] = '\0';
-    hc->referer = "";
+    hc->referrer = "";
     hc->useragent = "";
     hc->accept[0] = '\0';
     hc->accepte[0] = '\0';
@@ -1975,8 +1975,8 @@ httpd_request_reset(httpd_conn* hc )
     hc->one_one = 0;
     hc->got_range = 0;
     hc->tildemapped = 0;
-    hc->init_byte_loc = 0;
-    hc->end_byte_loc = -1;
+    hc->first_byte_index = 0;
+    hc->last_byte_index = -1;
     hc->keep_alive = 0;
     hc->do_keep_alive = 0;
     hc->should_linger = 0;
