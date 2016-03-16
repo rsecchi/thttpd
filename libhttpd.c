@@ -1932,8 +1932,17 @@ expand_symlinks( char* path, char** restP, int no_symlink_check, int tildemapped
     }
 
 int
-httpd_request_reset(httpd_conn* hc )
-    {
+httpd_request_reset(httpd_conn* hc, int is_sctp ) {
+#ifdef USE_SCTP
+    int sb_size;
+    struct sctp_status status;
+    socklen_t sz;
+#ifdef SCTP_EXPLICIT_EOR
+    const int on = 1;
+#endif
+#endif
+
+
     hc->read_idx = 0;
     hc->checked_idx = 0;
     hc->checked_state = CHST_FIRSTWORD;
@@ -2100,7 +2109,7 @@ httpd_get_conn( httpd_server* hs, int listen_fd, httpd_conn* hc, int is_sctp )
     (void) memset( &hc->client_addr, 0, sizeof(hc->client_addr) );
     (void) memmove( &hc->client_addr, &sa, sockaddr_len( &sa ) );
 
-    return httpd_request_reset(hc);
+    return httpd_request_reset(hc, is_sctp);
     }
 
 
