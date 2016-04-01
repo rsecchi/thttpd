@@ -1,6 +1,6 @@
 /* libhttpd.h - defines for libhttpd
 **
-** Copyright © 1995,1998,1999,2000,2001 by Jef Poskanzer <jef@mail.acme.com>.
+** Copyright ï¿½ 1995,1998,1999,2000,2001 by Jef Poskanzer <jef@mail.acme.com>.
 ** All rights reserved.
 **
 ** Redistribution and use in source and binary forms, with or without
@@ -148,7 +148,7 @@ typedef struct {
     int got_range;
     int tildemapped;	/* this connection got tilde-mapped */
     off_t first_byte_index, last_byte_index;
-    int keep_alive;
+    int keep_alive, do_keep_alive ;
     int should_linger;
     struct stat sb;
     int conn_fd;
