@@ -161,7 +161,7 @@ static void handle_linger( connecttab* c, struct timeval* tvP );
 static int check_throttles( connecttab* c );
 static void clear_throttles( connecttab* c, struct timeval* tvP );
 static void update_throttles( ClientData client_data, struct timeval* nowP );
-static void finish_connection( connecttab* c, struct timeval* tvP );
+static void finish_connection( connecttab* c, struct timeval* tvP, int doKeep );
 static void clear_connection( connecttab* c, struct timeval* tvP, int doKeep );
 static void really_clear_connection( connecttab* c, struct timeval* tvP );
 static void idle( ClientData client_data, struct timeval* nowP );
@@ -823,7 +823,7 @@ main( int argc, char** argv )
 	    hc = c->hc;
 	    if ( ! fdwatch_check_fd( hc->conn_fd ) )
 		/* Something went wrong. */
-		clear_connection( c, &tv );
+		clear_connection( c, &tv, 0);
 	    else
 		switch ( c->conn_state )
 		    {
@@ -1625,7 +1625,7 @@ handle_read( connecttab* c, struct timeval* tvP ) {
     if ( hc->read_idx >= hc->read_size ) {
         if ( hc->read_size > 5000 ) {
             httpd_send_err( hc, 400, httpd_err400title, "", httpd_err400form, "" );
-            finish_connection( c, tvP );
+            finish_connection( c, tvP, 0 );
             return;
         }
         httpd_realloc_str( &hc->read_buf, &hc->read_size, hc->read_size + 1000 );
@@ -1639,7 +1639,7 @@ handle_read( connecttab* c, struct timeval* tvP ) {
             httpd_send_err( hc, 400, httpd_err400title, "", httpd_err400form, "" );
         }
 
-    	finish_connection( c, tvP );
+    	finish_connection( c, tvP, 0 );
     	return;
 	} else if ( sz < 0 ) {
     	/* Ignore EINTR and EAGAIN.  Also ignore EWOULDBLOCK.  At first glance
@@ -1651,7 +1651,7 @@ handle_read( connecttab* c, struct timeval* tvP ) {
             return;
         }
         httpd_send_err( hc, 400, httpd_err400title, "", httpd_err400form, "" );
-        finish_connection( c, tvP );
+        finish_connection( c, tvP, 0 );
         return;
 	}
 
@@ -1668,27 +1668,27 @@ handle_read( connecttab* c, struct timeval* tvP ) {
     	   return;
     	case GR_BAD_REQUEST:
         	httpd_send_err( hc, 400, httpd_err400title, "", httpd_err400form, "" );
-        	finish_connection( c, tvP );
+        	finish_connection( c, tvP, 0 );
         	return;
 	}
 
     /* Yes.  Try parsing and resolving it. */
     if ( httpd_parse_request( hc ) < 0 ) {
-    	finish_connection( c, tvP );
+    	finish_connection( c, tvP, 0 );
     	return;
 	}
 
     /* Check the throttle table */
     if ( ! check_throttles( c ) ) {
     	httpd_send_err(hc, 503, httpd_err503title, "", httpd_err503form, hc->encodedurl );
-    	finish_connection( c, tvP );
+    	finish_connection( c, tvP, 0 );
     	return;
 	}
 
     /* Start the connection going. */
     if ( httpd_start_request( hc, tvP ) < 0 ) {
     	/* Something went wrong.  Close down the connection. */
-    	finish_connection( c, tvP );
+    	finish_connection( c, tvP, 0 );
     	return;
 	}
 
@@ -1709,13 +1709,13 @@ handle_read( connecttab* c, struct timeval* tvP ) {
     	for ( tind = 0; tind < c->numtnums; ++tind )
     	    throttles[c->tnums[tind]].bytes_since_avg += hc->bytes_sent;
     	c->next_byte_index = hc->bytes_sent;
-    	finish_connection( c, tvP );
+    	finish_connection( c, tvP, 0 );
     	return;
 	}
 
     if ( c->next_byte_index >= c->end_byte_index ) {
     	/* There's nothing to send. */
-    	finish_connection( c, tvP );
+    	finish_connection( c, tvP, 0 );
     	return;
 	}
 
@@ -1869,7 +1869,7 @@ handle_send( connecttab* c, struct timeval* tvP )
 	*/
 	if ( errno != EPIPE && errno != EINVAL && errno != ECONNRESET )
 	    syslog( LOG_ERR, "write - %m sending %.80s", hc->encodedurl );
-	clear_connection( c, tvP );
+	clear_connection( c, tvP, 0 );
 	return;
 	}
 
@@ -1904,7 +1904,7 @@ handle_send( connecttab* c, struct timeval* tvP )
     if ( c->next_byte_index >= c->end_byte_index )
 	{
 	/* This connection is finished! */
-	finish_connection( c, tvP );
+	finish_connection( c, tvP, 0 );
 	return;
 	}
 
@@ -2063,13 +2063,13 @@ update_throttles( ClientData client_data, struct timeval* nowP )
 
 
 static void
-finish_connection( connecttab* c, struct timeval* tvP )
+finish_connection( connecttab* c, struct timeval* tvP, int doKeep )
     {
     /* If we haven't actually sent the buffered response yet, do so now. */
     httpd_write_response( c->hc );
 
     /* And clear. */
-    clear_connection( c, tvP );
+    clear_connection( c, tvP, doKeep );
     }
 
 
@@ -2096,7 +2096,7 @@ clear_connection( connecttab* c, struct timeval* tvP, int doKeep ) {
 
     if ( c->hc->do_keep_alive && doKeep) {
         client_data.p = c;
-        c->bytes_sent = 0;
+        c->end_byte_index = 0;
         c->numtnums = 0;
         c->keep_alive = 1;
     }
@@ -2172,7 +2172,7 @@ idle( ClientData client_data, struct timeval* nowP )
 		    httpd_ntoa( &c->hc->client_addr ) );
 		httpd_send_err(
 		    c->hc, 408, httpd_err408title, "", httpd_err408form, "" );
-		finish_connection( c, nowP );
+		finish_connection( c, nowP, 0 );
 		}
 	    break;
 	    case CNST_SENDING:
@@ -2182,7 +2182,7 @@ idle( ClientData client_data, struct timeval* nowP )
 		syslog( LOG_INFO,
 		    "%.80s connection timed out sending",
 		    httpd_ntoa( &c->hc->client_addr ) );
-		clear_connection( c, nowP );
+		clear_connection( c, nowP, 0 );
 		}
 	    break;
 	    }
