@@ -25,6 +25,7 @@
 ** SUCH DAMAGE.
 */
 
+#undef HAVE_SIGSET
 
 #include "config.h"
 #include "version.h"
@@ -35,6 +36,7 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <sys/uio.h>
+#include <poll.h>
 
 #include <errno.h>
 #ifdef HAVE_FCNTL_H
@@ -88,7 +90,7 @@ static char* user;
 static char* charset;
 static char* p3p;
 static int max_age;
-
+static int persistent;
 
 typedef struct {
     char* pattern;
@@ -115,8 +117,11 @@ typedef struct {
     Timer* linger_timer;
     long wouldblock_delay;
     off_t bytes;
-    off_t end_byte_index;
-    off_t next_byte_index;
+    /* off_t end_byte_index; */
+    /* off_t next_byte_index; */
+#ifdef USE_SCTP
+    struct sctp_assoc assoc;
+#endif
     } connecttab;
 static connecttab* connects;
 static int num_connects, max_connects, first_free_connect;
@@ -128,6 +133,7 @@ static int httpd_conn_count;
 #define CNST_SENDING 2
 #define CNST_PAUSING 3
 #define CNST_LINGERING 4
+#define CNST_IDLE 5
 
 
 static httpd_server* hs = (httpd_server*) 0;
@@ -157,6 +163,7 @@ static int handle_newconnect( struct timeval* tvP, int listen_fd, int is_sctp );
 static void handle_read( connecttab* c, struct timeval* tvP );
 static void handle_send( connecttab* c, struct timeval* tvP );
 static void handle_linger( connecttab* c, struct timeval* tvP );
+static void handle_idle( connecttab* c, struct timeval* tvP );
 static int check_throttles( connecttab* c );
 static void clear_throttles( connecttab* c, struct timeval* tvP );
 static void update_throttles( ClientData client_data, struct timeval* nowP );
@@ -218,7 +225,7 @@ handle_chld( int sig )
 	    ** but with some kernels it does anyway.  Ignore it.
 	    */
 	    if ( errno != ECHILD )
-		syslog( LOG_ERR, "child wait - %m" );
+		syslog( LOG_ERR, "child wait" );
 	    break;
 	    }
 	/* Decrement the CGI count.  Note that this is not accurate, since
@@ -345,7 +352,7 @@ re_open_logfile( void )
 	logfp = fopen( logfile, "a" );
 	if ( logfp == (FILE*) 0 )
 	    {
-	    syslog( LOG_CRIT, "re-opening %.80s - %m", logfile );
+	    syslog( LOG_CRIT, "re-opening %.80s", logfile );
 	    return;
 	    }
 	(void) fcntl( fileno( logfp ), F_SETFD, 1 );
@@ -371,6 +378,7 @@ main( int argc, char** argv )
     httpd_sockaddr sa6;
     int gotv4, gotv6;
     struct timeval tv;
+    int fd_state;
 
     argv0 = argv[0];
 
@@ -434,7 +442,7 @@ main( int argc, char** argv )
 	    logfp = fopen( logfile, "a" );
 	    if ( logfp == (FILE*) 0 )
 		{
-		syslog( LOG_CRIT, "%.80s - %m", logfile );
+		syslog( LOG_CRIT, "%.80s", logfile );
 		perror( logfile );
 		exit( 1 );
 		}
@@ -451,7 +459,7 @@ main( int argc, char** argv )
 		*/
 		if ( fchown( fileno( logfp ), uid, gid ) < 0 )
 		    {
-		    syslog( LOG_WARNING, "fchown logfile - %m" );
+		    syslog( LOG_WARNING, "fchown logfile" );
 		    perror( "fchown logfile" );
 		    }
 		}
@@ -465,7 +473,7 @@ main( int argc, char** argv )
 	{
 	if ( chdir( dir ) < 0 )
 	    {
-	    syslog( LOG_CRIT, "chdir - %m" );
+	    syslog( LOG_CRIT, "chdir" );
 	    perror( "chdir" );
 	    exit( 1 );
 	    }
@@ -479,7 +487,7 @@ main( int argc, char** argv )
 	*/
 	if ( chdir( pwd->pw_dir ) < 0 )
 	    {
-	    syslog( LOG_CRIT, "chdir - %m" );
+	    syslog( LOG_CRIT, "chdir" );
 	    perror( "chdir" );
 	    exit( 1 );
 	    }
@@ -505,7 +513,7 @@ main( int argc, char** argv )
 #ifdef HAVE_DAEMON
 	if ( daemon( 1, 1 ) < 0 )
 	    {
-	    syslog( LOG_CRIT, "daemon - %m" );
+	    syslog( LOG_CRIT, "daemon" );
 	    exit( 1 );
 	    }
 #else /* HAVE_DAEMON */
@@ -514,7 +522,7 @@ main( int argc, char** argv )
 	    case 0:
 	    break;
 	    case -1:
-	    syslog( LOG_CRIT, "fork - %m" );
+	    syslog( LOG_CRIT, "fork" );
 	    exit( 1 );
 	    default:
 	    exit( 0 );
@@ -530,7 +538,7 @@ main( int argc, char** argv )
 	** process.
 	*/
 #ifdef HAVE_SETSID
-        (void) setsid();
+      (void) setsid();
 #endif /* HAVE_SETSID */
 	}
 
@@ -540,7 +548,7 @@ main( int argc, char** argv )
 	FILE* pidfp = fopen( pidfile, "w" );
 	if ( pidfp == (FILE*) 0 )
 	    {
-	    syslog( LOG_CRIT, "%.80s - %m", pidfile );
+	    syslog( LOG_CRIT, "%.80s", pidfile );
 	    exit( 1 );
 	    }
 	(void) fprintf( pidfp, "%d\n", (int) getpid() );
@@ -563,7 +571,7 @@ main( int argc, char** argv )
 	{
 	if ( chroot( cwd ) < 0 )
 	    {
-	    syslog( LOG_CRIT, "chroot - %m" );
+	    syslog( LOG_CRIT, "chroot" );
 	    perror( "chroot" );
 	    exit( 1 );
 	    }
@@ -592,7 +600,7 @@ main( int argc, char** argv )
 	/* Always chdir to / after a chroot. */
 	if ( chdir( cwd ) < 0 )
 	    {
-	    syslog( LOG_CRIT, "chroot chdir - %m" );
+	    syslog( LOG_CRIT, "chroot chdir" );
 	    perror( "chroot chdir" );
 	    exit( 1 );
 	    }
@@ -603,7 +611,7 @@ main( int argc, char** argv )
 	{
 	if ( chdir( data_dir ) < 0 )
 	    {
-	    syslog( LOG_CRIT, "data_dir chdir - %m" );
+	    syslog( LOG_CRIT, "data_dir chdir" );
 	    perror( "data_dir chdir" );
 	    exit( 1 );
 	    }
@@ -645,7 +653,7 @@ main( int argc, char** argv )
 	gotv4 ? &sa4 : (httpd_sockaddr*) 0, gotv6 ? &sa6 : (httpd_sockaddr*) 0,
 	port, cgi_pattern, cgi_limit, charset, p3p, max_age, cwd, no_log, logfp,
 	no_symlink_check, do_vhost, do_global_passwd, url_pattern,
-	local_pattern, no_empty_referrers );
+	local_pattern, no_empty_referrers, persistent );
     if ( hs == (httpd_server*) 0 )
 	exit( 1 );
 
@@ -692,18 +700,18 @@ main( int argc, char** argv )
 	/* Set aux groups to null. */
 	if ( setgroups( 0, (const gid_t*) 0 ) < 0 )
 	    {
-	    syslog( LOG_CRIT, "setgroups - %m" );
+	    syslog( LOG_CRIT, "setgroups" );
 	    exit( 1 );
 	    }
 	/* Set primary group. */
 	if ( setgid( gid ) < 0 )
 	    {
-	    syslog( LOG_CRIT, "setgid - %m" );
+	    syslog( LOG_CRIT, "setgid" );
 	    exit( 1 );
 	    }
 	/* Try setting aux groups correctly - not critical if this fails. */
 	if ( initgroups( user, gid ) < 0 )
-	    syslog( LOG_WARNING, "initgroups - %m" );
+	    syslog( LOG_WARNING, "initgroups" );
 #ifdef HAVE_SETLOGIN
 	/* Set login name. */
         (void) setlogin( user );
@@ -711,7 +719,7 @@ main( int argc, char** argv )
 	/* Set uid. */
 	if ( setuid( uid ) < 0 )
 	    {
-	    syslog( LOG_CRIT, "setuid - %m" );
+	    syslog( LOG_CRIT, "setuid" );
 	    exit( 1 );
 	    }
 	/* Check for unnecessary security exposure. */
@@ -768,7 +776,7 @@ main( int argc, char** argv )
 	    {
 	    if ( errno == EINTR || errno == EAGAIN )
 		continue;       /* try again */
-	    syslog( LOG_ERR, "fdwatch - %m" );
+	    syslog( LOG_ERR, "fdwatch" );
 	    exit( 1 );
 	    }
 	(void) gettimeofday( &tv, (struct timezone*) 0 );
@@ -820,17 +828,32 @@ main( int argc, char** argv )
 	    if ( c == (connecttab*) 0 )
 		continue;
 	    hc = c->hc;
-	    if ( ! fdwatch_check_fd( hc->conn_fd ) )
+	    fd_state = fdwatch_check_fd( hc->conn_fd );
+	    if ( ! fd_state )
 		/* Something went wrong. */
 		clear_connection( c, &tv );
-	    else
+	    else {
+#ifdef USE_SCTP
+		if (c->hc->is_sctp) {
+
+			if (fd_state & POLLIN)
+				handle_read( c, &tv );
+			
+			if (fd_state & POLLOUT)
+				handle_send( c, &tv ); 
+
+		} else
+#endif
 		switch ( c->conn_state )
 		    {
 		    case CNST_READING: handle_read( c, &tv ); break;
 		    case CNST_SENDING: handle_send( c, &tv ); break;
 		    case CNST_LINGERING: handle_linger( c, &tv ); break;
+		    case CNST_IDLE: handle_idle( c, &tv); break;
 		    }
 	    }
+	        
+	}
 	tmr_run( &tv );
 
 	if ( got_usr1 && ! terminate )
@@ -907,6 +930,7 @@ parse_args( int argc, char** argv )
     p3p = "";
     max_age = -1;
     argn = 1;
+    persistent = 0;
     while ( argn < argc && argv[argn][0] == '-' )
 	{
 	if ( strcmp( argv[argn], "-V" ) == 0 )
@@ -1003,6 +1027,8 @@ parse_args( int argc, char** argv )
 	    }
 	else if ( strcmp( argv[argn], "-D" ) == 0 )
 	    debug = 1;
+	else if ( strcmp( argv[argn], "-a" ) == 0 )
+	    persistent = 1;
 	else
 	    usage();
 	++argn;
@@ -1397,7 +1423,7 @@ read_throttlefile( char* tf )
     fp = fopen( tf, "r" );
     if ( fp == (FILE*) 0 )
 	{
-	syslog( LOG_CRIT, "%.80s - %m", tf );
+	syslog( LOG_CRIT, "%.80s", tf );
 	perror( tf );
 	exit( 1 );
 	}
@@ -1522,11 +1548,74 @@ shut_down( void )
     }
 
 
+#ifdef USE_SCTP
+static int
+init_assoc(struct sctp_assoc* assocp, httpd_conn* hc)
+{
+struct sctp_status status;
+struct sctp_event_subscribe ev_sctp;
+int sb_size;
+
+socklen_t sz;
+
+	assocp->fd = hc->conn_fd;
+	memset( &(assocp->caddr), 0, sizeof(assocp->caddr));
+	memmove( &(assocp->caddr), &hc->client_addr, sizeof(hc->client_addr));
+
+
+	sz = (socklen_t)sizeof(struct sctp_status);
+	if ( getsockopt(hc->conn_fd, IPPROTO_SCTP, SCTP_STATUS, &status, &sz) < 0) {
+		syslog(LOG_CRIT, "getsockopt SCTP_STATUS");
+		close(hc->conn_fd);
+		hc->conn_fd = -1;
+		return GC_FAIL;
+	}
+	assocp->no_i_streams = status.sstat_instrms;
+	assocp->no_o_streams = status.sstat_outstrms;
+
+	sz = (socklen_t)sizeof(int);
+	if ( getsockopt(hc->conn_fd, SOL_SOCKET, SO_SNDBUF, &sb_size, &sz) < 0 ) {
+		syslog( LOG_CRIT, "getsockopt SO_SNDBUF" );
+		close( hc->conn_fd );
+		hc->conn_fd = -1;
+		return GC_FAIL;
+	}
+	assocp->send_at_once_limit = sb_size / 4;
+
+	
+	memset(&ev_sctp, 0, sizeof(ev_sctp));
+	ev_sctp.sctp_data_io_event = 1;
+
+	if ( setsockopt(hc->conn_fd, IPPROTO_SCTP, SCTP_EVENTS, &ev_sctp, sizeof(ev_sctp)) <  0)
+	    {
+	    syslog ( LOG_NOTICE, "setsockopt SCTP_EVENTS" );
+	    close( hc->conn_fd );
+	    hc->conn_fd = -1;
+	    return GC_FAIL;
+	    }
+#ifdef SCTP_EXPLICIT_EOR
+	sz = (socklen_t)sizeof(int);
+	if ( setsockopt(hc->conn_fd, IPPROTO_SCTP, SCTP_EXPLICIT_EOR, &on, sz) < 0 )
+	    {
+	    syslog( LOG_CRIT, "getsockopt SCTP_EXPLICIT_EOR" );
+	    close( hc->conn_fd );
+	    hc->conn_fd = -1;
+	    return GC_FAIL;
+	    }
+	assocp->use_eeor = 1;
+#else
+	assocp->use_eeor = 0;
+#endif
+	
+	return GC_OK;
+}
+#endif
+
+
 static int
 handle_newconnect( struct timeval* tvP, int listen_fd, int is_sctp )
     {
     connecttab* c;
-    ClientData client_data;
 
     /* This loops until the accept() fails, trying to start new
     ** connections as fast as possible so we don't overrun the
@@ -1584,11 +1673,10 @@ handle_newconnect( struct timeval* tvP, int listen_fd, int is_sctp )
 	first_free_connect = c->next_free_connect;
 	c->next_free_connect = -1;
 	++num_connects;
-	client_data.p = c;
 	c->active_at = tvP->tv_sec;
 	c->wakeup_timer = (Timer*) 0;
 	c->linger_timer = (Timer*) 0;
-	c->next_byte_index = 0;
+	/* c->next_byte_index = 0; */
 	c->numtnums = 0;
 
 	/* Set the connection file descriptor to no-delay mode. */
@@ -1597,7 +1685,13 @@ handle_newconnect( struct timeval* tvP, int listen_fd, int is_sctp )
 	fdwatch_add_fd( c->hc->conn_fd, c, FDW_READ );
 
 #ifdef USE_SCTP
-	if ( c->hc->is_sctp)
+	if (is_sctp) {
+		init_assoc(&(c->assoc), c->hc);
+		c->hc->assocp = &(c->assoc);
+		c->hc->conn_state = CNST_READING;
+	}
+
+	if (is_sctp)
 	    ++stats_associations;
 	else
 	    ++stats_connections;
@@ -1611,11 +1705,67 @@ handle_newconnect( struct timeval* tvP, int listen_fd, int is_sctp )
 
 
 static void
+handle_idle( connecttab* c, struct timeval* tvP )
+    {
+
+	syslog(LOG_NOTICE, "New data when in CNST_IDLE\n");
+	c->conn_state = CNST_READING;
+	
+	c->hc->read_idx = 0;
+	c->hc->checked_idx = 0;
+	handle_read( c, tvP);
+
+    }
+
+static void
 handle_read( connecttab* c, struct timeval* tvP )
     {
     int sz;
-    ClientData client_data;
     httpd_conn* hc = c->hc;
+    struct sctp_sndrcvinfo sinfo;
+    int msg_flags = 0;
+
+
+#ifdef USE_SCTP
+
+    if ( hc->is_sctp ) {
+       
+       /* We peek the message so to find which stream is using */
+       msg_flags = MSG_PEEK;
+
+       bzero(&sinfo, sizeof(sinfo));
+
+       sz = sctp_recvmsg(hc->conn_fd, &(hc->read_buf[hc->read_idx]),
+            hc->read_size - hc->read_idx, NULL, NULL, &sinfo, &msg_flags);
+
+       syslog(LOG_NOTICE, "The stream ID: %d", sinfo.sinfo_stream);
+
+
+       while(hc!=NULL) {
+		if (hc->stream_id == sinfo.sinfo_stream) {
+		        syslog(LOG_NOTICE, "Stream found!!");
+             		break;
+                }
+          hc = (httpd_conn*)hc->next;
+       }
+
+       if ( hc == NULL ) {
+		/* New stream */
+		syslog(LOG_NOTICE, "get the new stream and enqueue it");
+		hc = httpd_get_stream(hs, &c->assoc, sinfo.sinfo_stream);
+
+
+		/* init from assoc */
+		hc->conn_fd = c->assoc.fd;
+		hc->assocp = &c->assoc;
+		hc->conn_state = CNST_READING;
+
+		hc->next = c->hc;
+		c->hc = hc;
+	}
+    }
+#endif
+
 
     /* Is there room in our buffer to read more bytes? */
     if ( hc->read_idx >= hc->read_size )
@@ -1630,10 +1780,24 @@ handle_read( connecttab* c, struct timeval* tvP )
 	    &hc->read_buf, &hc->read_size, hc->read_size + 1000 );
 	}
 
+#ifdef USE_SCTP
+
+    /* Read some more bytes using SCTP. */
+    if ( hc->is_sctp ) {
+
+       bzero(&sinfo, sizeof(sinfo));
+
+       sz = sctp_recvmsg(hc->conn_fd, &(hc->read_buf[hc->read_idx]),
+            hc->read_size - hc->read_idx, NULL, NULL, &sinfo, &msg_flags);
+
+    }
+    else
+#endif
     /* Read some more bytes. */
     sz = read(
 	hc->conn_fd, &(hc->read_buf[hc->read_idx]),
 	hc->read_size - hc->read_idx );
+
     if ( sz == 0 )
 	{
 	httpd_send_err( hc, 400, httpd_err400title, "", httpd_err400form, "" );
@@ -1642,6 +1806,7 @@ handle_read( connecttab* c, struct timeval* tvP )
 	}
     if ( sz < 0 )
 	{
+
 	/* Ignore EINTR and EAGAIN.  Also ignore EWOULDBLOCK.  At first glance
 	** you would think that connections returned by fdwatch as readable
 	** should never give an EWOULDBLOCK; however, this apparently can
@@ -1695,13 +1860,13 @@ handle_read( connecttab* c, struct timeval* tvP )
     /* Fill in end_byte_index. */
     if ( hc->got_range )
 	{
-	c->next_byte_index = hc->first_byte_index;
-	c->end_byte_index = hc->last_byte_index + 1;
+	hc->next_byte_index = hc->first_byte_index;
+	hc->end_byte_index = hc->last_byte_index + 1;
 	}
     else if ( hc->bytes_to_send < 0 )
-	c->end_byte_index = 0;
+	hc->end_byte_index = 0;
     else
-	c->end_byte_index = hc->bytes_to_send;
+	hc->end_byte_index = hc->bytes_to_send;
 
     /* Check if it's already handled. */
     if ( hc->file_address == (char*) 0 )
@@ -1710,11 +1875,11 @@ handle_read( connecttab* c, struct timeval* tvP )
 	int tind;
 	for ( tind = 0; tind < c->numtnums; ++tind )
 	    throttles[c->tnums[tind]].bytes_since_avg += hc->bytes_sent;
-	c->next_byte_index = hc->bytes_sent;
+	hc->next_byte_index = hc->bytes_sent;
 	finish_connection( c, tvP );
 	return;
 	}
-    if ( c->next_byte_index >= c->end_byte_index )
+    if ( hc->next_byte_index >= hc->end_byte_index )
 	{
 	/* There's nothing to send. */
 	finish_connection( c, tvP );
@@ -1723,12 +1888,22 @@ handle_read( connecttab* c, struct timeval* tvP )
 
     /* Cool, we have a valid connection and a file to send to it. */
     c->conn_state = CNST_SENDING;
+
+#ifdef USE_SCTP
+    if (hc->is_sctp) {
+	hc->conn_state = CNST_SENDING;
+    }
+#endif
+
     c->started_at = tvP->tv_sec;
     c->wouldblock_delay = 0;
-    client_data.p = c;
 
     fdwatch_del_fd( hc->conn_fd );
-    fdwatch_add_fd( hc->conn_fd, c, FDW_WRITE );
+    if (hc->is_sctp) 
+	    fdwatch_add_fd( hc->conn_fd, c, FDW_RW );
+    else
+	    fdwatch_add_fd( hc->conn_fd, c, FDW_WRITE );
+    
     }
 
 
@@ -1740,10 +1915,32 @@ handle_send( connecttab* c, struct timeval* tvP )
     ClientData client_data;
     time_t elapsed;
     httpd_conn* hc = c->hc;
+    httpd_conn* w;
     int tind;
     struct msghdr msg;
     struct cmsghdr *cmsg;
     struct iovec iv[2];
+
+#ifdef USE_SCTP
+
+    /* scanning to find a stream in sending state */
+    while( hc != NULL ) {
+       if (hc->conn_state == CNST_SENDING)
+          break;
+       hc = hc->next;
+    }
+    
+    if ( hc == NULL ) {
+         /* should not happen */
+         syslog(LOG_CRIT, "handle_send called without stream in sending state");
+	 fdwatch_del_fd(c->hc->conn_fd);
+	 fdwatch_add_fd(c->hc->conn_fd, c, FDW_READ);
+         return;
+    }
+
+#endif
+
+
 #ifdef USE_SCTP
 #ifdef SCTP_SNDINFO
     char cmsgbuf[CMSG_SPACE(sizeof(struct sctp_sndinfo))];
@@ -1761,21 +1958,21 @@ handle_send( connecttab* c, struct timeval* tvP )
 #ifdef USE_SCTP
     if ( hc->is_sctp )
 	{
-	if ( max_bytes > hc->send_at_once_limit )
-	    max_bytes = hc->send_at_once_limit;
+	if ( max_bytes > hc->assocp->send_at_once_limit )
+	    max_bytes = hc->assocp->send_at_once_limit;
 	}
 #endif
 
     iv[0].iov_base = hc->response;
     iv[0].iov_len = hc->responselen;
-    iv[1].iov_base = &(hc->file_address[c->next_byte_index]);
-    iv[1].iov_len = MIN( c->end_byte_index - c->next_byte_index, max_bytes );
+    iv[1].iov_base = &(hc->file_address[hc->next_byte_index]);
+    iv[1].iov_len = MIN( hc->end_byte_index - hc->next_byte_index, max_bytes );
     msg.msg_name = NULL;
     msg.msg_namelen = 0;
     msg.msg_iov = iv;
     msg.msg_iovlen = 2;
 #ifdef USE_SCTP
-    if ( hc->is_sctp && hc->use_eeor )
+    if ( hc->is_sctp )
 	{
 	cmsg = (struct cmsghdr *)cmsgbuf;
 	cmsg->cmsg_level = IPPROTO_SCTP;
@@ -1783,10 +1980,11 @@ handle_send( connecttab* c, struct timeval* tvP )
 	cmsg->cmsg_type = SCTP_SNDINFO;
 	cmsg->cmsg_len = CMSG_LEN(sizeof(struct sctp_sndinfo));
 	sndinfo = (struct sctp_sndinfo *)CMSG_DATA(cmsg);
-	sndinfo->snd_sid = 0;
+	sndinfo->snd_sid = hc->stream_id;
 	sndinfo->snd_flags = 0;
 #ifdef SCTP_EXPLICIT_EOR
-	if ( c->end_byte_index - c->next_byte_index <= max_bytes )
+	if ( c->end_byte_index - c->next_byte_index <= max_bytes 
+	       && hc->assocp->use_eeor )
 	    sndinfo->snd_flags |= SCTP_EOR;
 #endif
 	sndinfo->snd_ppid = htonl(0);
@@ -1798,10 +1996,11 @@ handle_send( connecttab* c, struct timeval* tvP )
 	cmsg->cmsg_type = SCTP_SNDRCV;
 	cmsg->cmsg_len = CMSG_LEN(sizeof(struct sctp_sndrcvinfo));
 	sndrcvinfo = (struct sctp_sndrcvinfo *)CMSG_DATA(cmsg);
-	sndrcvinfo->sinfo_stream = 0;
+	sndrcvinfo->sinfo_stream = hc->stream_id;
 	sndrcvinfo->sinfo_flags = 0;
 #ifdef SCTP_EXPLICIT_EOR
-	if ( c->end_byte_index - c->next_byte_index <= max_bytes )
+	if ( c->end_byte_index - c->next_byte_index <= max_bytes
+	     && hc->assocp->use_eeor  )
 	    sndrcvinfo->sinfo_flags |= SCTP_EOR;
 #endif
 	sndrcvinfo->sinfo_ppid = htonl(0);
@@ -1870,7 +2069,7 @@ handle_send( connecttab* c, struct timeval* tvP )
 	** And ECONNRESET isn't interesting either.
 	*/
 	if ( errno != EPIPE && errno != EINVAL && errno != ECONNRESET )
-	    syslog( LOG_ERR, "write - %m sending %.80s", hc->encodedurl );
+	    syslog( LOG_ERR, "write - sending %.80s", hc->encodedurl );
 	clear_connection( c, tvP );
 	return;
 	}
@@ -1897,16 +2096,42 @@ handle_send( connecttab* c, struct timeval* tvP )
 	    }
 	}
     /* And update how much of the file we wrote. */
-    c->next_byte_index += sz;
+    hc->next_byte_index += sz;
     c->hc->bytes_sent += sz;
     for ( tind = 0; tind < c->numtnums; ++tind )
 	throttles[c->tnums[tind]].bytes_since_avg += sz;
 
     /* Are we done? */
-    if ( c->next_byte_index >= c->end_byte_index )
+    if ( hc->next_byte_index >= hc->end_byte_index )
 	{
 	/* This connection is finished! */
-	finish_connection( c, tvP );
+	if (persistent) {	
+
+		/* reset connection */
+		c->conn_state = CNST_IDLE;
+
+		/* fdwath for reading */
+		hc->next_byte_index  = 0;
+		hc->read_idx = 0;
+		hc->checked_idx = 0;
+		fdwatch_del_fd(c->hc->conn_fd);
+		fdwatch_add_fd(c->hc->conn_fd, c, FDW_READ);
+
+		if (hc->is_sctp) {
+			/* Reset stream */
+			hc->conn_state = CNST_IDLE;
+			for(w = c->hc; w != NULL; w = w->next ) {
+				if (w->conn_state == CNST_SENDING) {
+					fdwatch_del_fd(w->conn_fd);
+					fdwatch_add_fd(w->conn_fd, c, FDW_RW);
+					break;
+				}
+			}
+		}
+
+
+	} else
+		finish_connection( c, tvP );
 	return;
 	}
 
@@ -2123,7 +2348,9 @@ clear_connection( connecttab* c, struct timeval* tvP )
 	    }
 	}
     else
+
 	really_clear_connection( c, tvP );
+
     }
 
 

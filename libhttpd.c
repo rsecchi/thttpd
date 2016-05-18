@@ -244,7 +244,7 @@ httpd_initialize(
     unsigned short port, char* cgi_pattern, int cgi_limit, char* charset,
     char* p3p, int max_age, char* cwd, int no_log, FILE* logfp,
     int no_symlink_check, int vhost, int global_passwd, char* url_pattern,
-    char* local_pattern, int no_empty_referrers )
+    char* local_pattern, int no_empty_referrers, int keep_alive )
     {
     httpd_server* hs;
     static char ghnbuf[256];
@@ -348,6 +348,7 @@ httpd_initialize(
     hs->vhost = vhost;
     hs->global_passwd = global_passwd;
     hs->no_empty_referrers = no_empty_referrers;
+    hs->keep_alive = keep_alive;
 
     /* Initialize listen sockets.  Try v6 first because of a Linux peculiarity;
     ** like some other systems, it has magical v6 sockets that also listen for
@@ -410,7 +411,7 @@ initialize_listen_socket( httpd_sockaddr* saP )
     listen_fd = socket( saP->sa.sa_family, SOCK_STREAM, 0 );
     if ( listen_fd < 0 )
 	{
-	syslog( LOG_CRIT, "socket %.80s - %m", httpd_ntoa( saP ) );
+	syslog( LOG_CRIT, "socket %.80s", httpd_ntoa( saP ) );
 	return -1;
 	}
     (void) fcntl( listen_fd, F_SETFD, 1 );
@@ -420,18 +421,18 @@ initialize_listen_socket( httpd_sockaddr* saP )
     if ( setsockopt(
 	     listen_fd, SOL_SOCKET, SO_REUSEADDR, (char*) &on,
 	     sizeof(on) ) < 0 )
-	syslog( LOG_CRIT, "setsockopt SO_REUSEADDR - %m" );
+	syslog( LOG_CRIT, "setsockopt SO_REUSEADDR" );
 
     /* Make v6 sockets v6 only */
     if ( saP->sa.sa_family == AF_INET6 )
 	if ( setsockopt( listen_fd, IPPROTO_IPV6, IPV6_V6ONLY, (char*) &on, sizeof(on) ) < 0 )
-	    syslog( LOG_CRIT, "setsockopt IPV6_V6ONLY - %m" );
+	    syslog( LOG_CRIT, "setsockopt IPV6_V6ONLY" );
 
     /* Bind to it. */
     if ( bind( listen_fd, &saP->sa, sockaddr_len( saP ) ) < 0 )
 	{
 	syslog(
-	    LOG_CRIT, "bind %.80s - %m", httpd_ntoa( saP ) );
+	    LOG_CRIT, "bind %.80s", httpd_ntoa( saP ) );
 	(void) close( listen_fd );
 	return -1;
 	}
@@ -440,13 +441,13 @@ initialize_listen_socket( httpd_sockaddr* saP )
     flags = fcntl( listen_fd, F_GETFL, 0 );
     if ( flags == -1 )
 	{
-	syslog( LOG_CRIT, "fcntl F_GETFL - %m" );
+	syslog( LOG_CRIT, "fcntl F_GETFL" );
 	(void) close( listen_fd );
 	return -1;
 	}
     if ( fcntl( listen_fd, F_SETFL, flags | O_NDELAY ) < 0 )
 	{
-	syslog( LOG_CRIT, "fcntl O_NDELAY - %m" );
+	syslog( LOG_CRIT, "fcntl O_NDELAY" );
 	(void) close( listen_fd );
 	return -1;
 	}
@@ -454,7 +455,7 @@ initialize_listen_socket( httpd_sockaddr* saP )
     /* Start a listen going. */
     if ( listen( listen_fd, LISTEN_BACKLOG ) < 0 )
 	{
-	syslog( LOG_CRIT, "listen - %m" );
+	syslog( LOG_CRIT, "listen" );
 	(void) close( listen_fd );
 	return -1;
 	}
@@ -513,7 +514,7 @@ initialize_listen_sctp_socket( httpd_sockaddr* sa4P, httpd_sockaddr* sa6P )
     listen_fd = socket( sa6P ? AF_INET6 : AF_INET, SOCK_STREAM, IPPROTO_SCTP );
     if ( listen_fd < 0 )
 	{
-	syslog( LOG_CRIT, "SCTP socket - %m");
+	syslog( LOG_CRIT, "SCTP socket");
 	return -1;
 	}
     (void) fcntl( listen_fd, F_SETFD, 1 );
@@ -526,7 +527,7 @@ initialize_listen_sctp_socket( httpd_sockaddr* sa4P, httpd_sockaddr* sa6P )
 		 listen_fd, IPPROTO_IPV6, IPV6_V6ONLY, (char*) &off,
 		 sizeof(off) ) < 0 )
 	    {
-	    syslog( LOG_CRIT, "setsockopt IPV6_ONLY - %m" );
+	    syslog( LOG_CRIT, "setsockopt IPV6_ONLY" );
 	    (void) close( listen_fd );
 	    return -1;
 	    }
@@ -534,15 +535,15 @@ initialize_listen_sctp_socket( httpd_sockaddr* sa4P, httpd_sockaddr* sa6P )
 #endif
 
     /* Ensure an appropriate number of stream will be negotated. */
-    initmsg.sinit_num_ostreams = 1;   /* For now, only a single stream */
-    initmsg.sinit_max_instreams = 1;  /* For now, only a single stream */
+    initmsg.sinit_num_ostreams = 10;   /* For now, only a single stream */
+    initmsg.sinit_max_instreams = 10;  /* For now, only a single stream */
     initmsg.sinit_max_attempts = 0;   /* Use default */
     initmsg.sinit_max_init_timeo = 0; /* Use default */
     if ( setsockopt(
 	     listen_fd, IPPROTO_SCTP, SCTP_INITMSG, (char*) &initmsg,
 	     sizeof(initmsg) ) < 0 )
 	{
-	syslog( LOG_CRIT, "setsockopt SCTP_INITMSG - %m" );
+	syslog( LOG_CRIT, "setsockopt SCTP_INITMSG" );
 	(void) close( listen_fd );
 	return -1;
 	}
@@ -557,7 +558,7 @@ initialize_listen_sctp_socket( httpd_sockaddr* sa4P, httpd_sockaddr* sa6P )
 	     listen_fd, IPPROTO_SCTP, SCTP_ECN_SUPPORTED, (char*) &assoc_value,
 	     sizeof(assoc_value) ) < 0 )
 	{
-	syslog( LOG_CRIT, "setsockopt SCTP_ECN_SUPPORTED - %m" );
+	syslog( LOG_CRIT, "setsockopt SCTP_ECN_SUPPORTED" );
 	(void) close( listen_fd );
 	return -1;
 	}
@@ -568,7 +569,7 @@ initialize_listen_sctp_socket( httpd_sockaddr* sa4P, httpd_sockaddr* sa6P )
 	     listen_fd, IPPROTO_SCTP, SCTP_PR_SUPPORTED, (char*) &assoc_value,
 	     sizeof(assoc_value) ) < 0 )
 	{
-	syslog( LOG_CRIT, "setsockopt SCTP_PR_SUPPORTED - %m" );
+	syslog( LOG_CRIT, "setsockopt SCTP_PR_SUPPORTED" );
 	(void) close( listen_fd );
 	return -1;
 	}
@@ -579,7 +580,7 @@ initialize_listen_sctp_socket( httpd_sockaddr* sa4P, httpd_sockaddr* sa6P )
 	     listen_fd, IPPROTO_SCTP, SCTP_ASCONF_SUPPORTED, (char*) &assoc_value,
 	     sizeof(assoc_value) ) < 0 )
 	{
-	syslog( LOG_CRIT, "setsockopt SCTP_ASCONF_SUPPORTED - %m" );
+	syslog( LOG_CRIT, "setsockopt SCTP_ASCONF_SUPPORTED" );
 	(void) close( listen_fd );
 	return -1;
 	}
@@ -590,7 +591,7 @@ initialize_listen_sctp_socket( httpd_sockaddr* sa4P, httpd_sockaddr* sa6P )
 	     listen_fd, IPPROTO_SCTP, SCTP_AUTH_SUPPORTED, (char*) &assoc_value,
 	     sizeof(assoc_value) ) < 0 )
 	{
-	syslog( LOG_CRIT, "setsockopt SCTP_AUTH_SUPPORTED - %m" );
+	syslog( LOG_CRIT, "setsockopt SCTP_AUTH_SUPPORTED" );
 	(void) close( listen_fd );
 	return -1;
 	}
@@ -601,7 +602,7 @@ initialize_listen_sctp_socket( httpd_sockaddr* sa4P, httpd_sockaddr* sa6P )
 	     listen_fd, IPPROTO_SCTP, SCTP_RECONFIG_SUPPORTED, (char*) &assoc_value,
 	     sizeof(assoc_value) ) < 0 )
 	{
-	syslog( LOG_CRIT, "setsockopt SCTP_RECONFIG_SUPPORTED - %m" );
+	syslog( LOG_CRIT, "setsockopt SCTP_RECONFIG_SUPPORTED" );
 	(void) close( listen_fd );
 	return -1;
 	}
@@ -612,7 +613,7 @@ initialize_listen_sctp_socket( httpd_sockaddr* sa4P, httpd_sockaddr* sa6P )
 	     listen_fd, IPPROTO_SCTP, SCTP_NRSACK_SUPPORTED, (char*) &assoc_value,
 	     sizeof(assoc_value) ) < 0 )
 	{
-	syslog( LOG_CRIT, "setsockopt SCTP_NRSACK_SUPPORTED - %m" );
+	syslog( LOG_CRIT, "setsockopt SCTP_NRSACK_SUPPORTED" );
 	(void) close( listen_fd );
 	return -1;
 	}
@@ -623,7 +624,7 @@ initialize_listen_sctp_socket( httpd_sockaddr* sa4P, httpd_sockaddr* sa6P )
 	     listen_fd, IPPROTO_SCTP, SCTP_PKTDROP_SUPPORTED, (char*) &assoc_value,
 	     sizeof(assoc_value) ) < 0 )
 	{
-	syslog( LOG_CRIT, "setsockopt SCTP_PKTDROP_SUPPORTED - %m" );
+	syslog( LOG_CRIT, "setsockopt SCTP_PKTDROP_SUPPORTED" );
 	(void) close( listen_fd );
 	return -1;
 	}
@@ -634,7 +635,7 @@ initialize_listen_sctp_socket( httpd_sockaddr* sa4P, httpd_sockaddr* sa6P )
 	if ( sctp_bindx( listen_fd, &sa6P->sa, 1, SCTP_BINDX_ADD_ADDR) < 0 )
 	    {
 	    syslog(
-		LOG_CRIT, "sctp_bindx %.80s - %m", httpd_ntoa( sa6P ) );
+		LOG_CRIT, "sctp_bindx %.80s", httpd_ntoa( sa6P ) );
 	    (void) close( listen_fd );
 	    return -1;
 	    }
@@ -649,7 +650,7 @@ initialize_listen_sctp_socket( httpd_sockaddr* sa4P, httpd_sockaddr* sa6P )
 	    if ( sctp_bindx( listen_fd, &sa4P->sa, 1, SCTP_BINDX_ADD_ADDR) < 0 )
 		{
 		syslog(
-		    LOG_CRIT, "sctp_bindx %.80s - %m", httpd_ntoa( sa4P ) );
+		    LOG_CRIT, "sctp_bindx %.80s", httpd_ntoa( sa4P ) );
 		(void) close( listen_fd );
 		return -1;
 		}
@@ -659,13 +660,13 @@ initialize_listen_sctp_socket( httpd_sockaddr* sa4P, httpd_sockaddr* sa6P )
     flags = fcntl( listen_fd, F_GETFL, 0 );
     if ( flags == -1 )
 	{
-	syslog( LOG_CRIT, "fcntl F_GETFL - %m" );
+	syslog( LOG_CRIT, "fcntl F_GETFL" );
 	(void) close( listen_fd );
 	return -1;
 	}
     if ( fcntl( listen_fd, F_SETFL, flags | O_NDELAY ) < 0 )
 	{
-	syslog( LOG_CRIT, "fcntl O_NDELAY - %m" );
+	syslog( LOG_CRIT, "fcntl O_NDELAY" );
 	(void) close( listen_fd );
 	return -1;
 	}
@@ -673,7 +674,7 @@ initialize_listen_sctp_socket( httpd_sockaddr* sa4P, httpd_sockaddr* sa6P )
     /* Start a listen going. */
     if ( listen( listen_fd, LISTEN_BACKLOG ) < 0 )
 	{
-	syslog( LOG_CRIT, "listen - %m" );
+	syslog( LOG_CRIT, "listen" );
 	(void) close( listen_fd );
 	return -1;
 	}
@@ -810,7 +811,7 @@ httpd_write_response( httpd_conn* hc )
 #ifdef USE_SCTP
 	if ( hc->is_sctp )
 	    (void) httpd_write_fully_sctp( hc->conn_fd, hc->response, hc->responselen,
-					   hc->use_eeor, 1, hc->send_at_once_limit );
+					   hc->assocp->use_eeor, 1, hc->assocp->send_at_once_limit );
 	else
 	    (void) httpd_write_fully( hc->conn_fd, hc->response, hc->responselen );
 #else
@@ -895,9 +896,9 @@ send_mime( httpd_conn* hc, int status, char* title, char* encodings, char* extra
 	(void) my_snprintf(
 	    fixed_type, sizeof(fixed_type), type, hc->hs->charset );
 	(void) my_snprintf( buf, sizeof(buf),
-	    "%.20s %d %s\015\012Server: %s\015\012Content-Type: %s\015\012Date: %s\015\012Last-Modified: %s\015\012Accept-Ranges: bytes\015\012Connection: close\015\012",
+	    "%.20s %d %s\015\012Server: %s\015\012Content-Type: %s\015\012Date: %s\015\012Last-Modified: %s\015\012Accept-Ranges: bytes\015\012Connection: %s\015\012",
 	    hc->protocol, status, title, EXPOSED_SERVER_SOFTWARE, fixed_type,
-	    nowbuf, modbuf );
+	    nowbuf, modbuf, ( (hc->keep_alive) && (hc->hs->keep_alive))?"keep-alive":"close" );
 	add_response( hc, buf );
 	s100 = status / 100;
 	if ( s100 != 2 && s100 != 3 )
@@ -1358,7 +1359,7 @@ auth_check2( httpd_conn* hc, char* dirname  )
 	{
 	/* The file exists but we can't open it?  Disallow access. */
 	syslog(
-	    LOG_ERR, "%.80s auth file %.80s could not be opened - %m",
+	    LOG_ERR, "%.80s auth file %.80s could not be opened",
 	    httpd_ntoa( &hc->client_addr ), authpath );
 	httpd_send_err(
 	    hc, 403, err403title, "",
@@ -1634,7 +1635,7 @@ vhost_map( httpd_conn* hc )
 	sz = sizeof(sa);
 	if ( getsockname( hc->conn_fd, &sa.sa, &sz ) < 0 )
 	    {
-	    syslog( LOG_ERR, "getsockname - %m" );
+	    syslog( LOG_ERR, "getsockname" );
 	    return 0;
 	    }
 	hc->hostname = httpd_ntoa( &sa );
@@ -1863,7 +1864,7 @@ expand_symlinks( char* path, char** restP, int no_symlink_check, int tildemapped
 		    checked[prevcheckedlen] = '\0';
 		return checked;
 		}
-	    syslog( LOG_ERR, "readlink %.80s - %m", checked );
+	    syslog( LOG_ERR, "readlink %.80s", checked );
 	    return (char*) 0;
 	    }
 	++nlinks;
@@ -1921,18 +1922,130 @@ expand_symlinks( char* path, char** restP, int no_symlink_check, int tildemapped
     }
 
 
+
+#ifdef USE_SCTP
+httpd_conn*
+httpd_get_stream( httpd_server* hs, struct sctp_assoc* ap, int sid )
+    {
+
+    httpd_conn* hc;
+
+
+    hc = NEW(httpd_conn, 1);
+    if (hc == (httpd_conn*)0)
+    {
+        syslog(LOG_CRIT, "out of memory allocating an httpd_conn");
+	exit(1);
+    }   
+
+
+     hc->read_size = 0;
+     httpd_realloc_str( &hc->read_buf, &hc->read_size, 500 );
+     hc->maxdecodedurl =
+        hc->maxorigfilename = hc->maxexpnfilename = hc->maxencodings =
+        hc->maxpathinfo = hc->maxquery = hc->maxaccept =
+        hc->maxaccepte = hc->maxreqhost = hc->maxhostdir =
+        hc->maxremoteuser = hc->maxresponse = 0;
+#ifdef TILDE_MAP_2
+     hc->maxaltdir = 0;
+#endif /* TILDE_MAP_2 */
+     httpd_realloc_str( &hc->decodedurl, &hc->maxdecodedurl, 1 );
+     httpd_realloc_str( &hc->origfilename, &hc->maxorigfilename, 1 );
+     httpd_realloc_str( &hc->expnfilename, &hc->maxexpnfilename, 0 );
+     httpd_realloc_str( &hc->encodings, &hc->maxencodings, 0 );
+     httpd_realloc_str( &hc->pathinfo, &hc->maxpathinfo, 0 );
+     httpd_realloc_str( &hc->query, &hc->maxquery, 0 );
+     httpd_realloc_str( &hc->accept, &hc->maxaccept, 0 );
+     httpd_realloc_str( &hc->accepte, &hc->maxaccepte, 0 );
+     httpd_realloc_str( &hc->reqhost, &hc->maxreqhost, 0 );
+     httpd_realloc_str( &hc->hostdir, &hc->maxhostdir, 0 );
+     httpd_realloc_str( &hc->remoteuser, &hc->maxremoteuser, 0 );
+     httpd_realloc_str( &hc->response, &hc->maxresponse, 0 );
+#ifdef TILDE_MAP_2
+     httpd_realloc_str( &hc->altdir, &hc->maxaltdir, 0 );
+#endif /* TILDE_MAP_2 */
+     hc->initialized = 1;
+     hc->next = NULL;
+
+    /*(void) fcntl( hc->conn_fd, F_SETFD, 1 );*/
+    hc->hs = hs;
+    memset( &hc->client_addr, 0, sizeof(hc->client_addr) );
+    memmove( &hc->client_addr, &ap->caddr, sizeof( ap->caddr ) );
+    hc->read_idx = 0;
+    hc->checked_idx = 0;
+    hc->checked_state = CHST_FIRSTWORD;
+    hc->method = METHOD_UNKNOWN;
+    hc->status = 0;
+    hc->bytes_to_send = 0;
+    hc->bytes_sent = 0;
+    hc->encodedurl = "";
+    hc->decodedurl[0] = '\0';
+    hc->protocol = "UNKNOWN";
+    hc->origfilename[0] = '\0';
+    hc->expnfilename[0] = '\0';
+    hc->encodings[0] = '\0';
+    hc->pathinfo[0] = '\0';
+    hc->query[0] = '\0';
+    hc->referrer = "";
+    hc->useragent = "";
+    hc->accept[0] = '\0';
+    hc->accepte[0] = '\0';
+    hc->acceptl = "";
+    hc->cookie = "";
+    hc->contenttype = "";
+    hc->reqhost[0] = '\0';
+    hc->hdrhost = "";
+    hc->hostdir[0] = '\0';
+    hc->authorization = "";
+    hc->remoteuser[0] = '\0';
+    hc->response[0] = '\0';
+#ifdef TILDE_MAP_2
+    hc->altdir[0] = '\0';
+#endif /* TILDE_MAP_2 */
+    hc->responselen = 0;
+    hc->if_modified_since = (time_t) -1;
+    hc->range_if = (time_t) -1;
+    hc->contentlength = -1;
+    hc->type = "";
+    hc->hostname = (char*) 0;
+    hc->mime_flag = 1;
+    hc->one_one = 0;
+    hc->got_range = 0;
+    hc->tildemapped = 0;
+    hc->first_byte_index = 0;
+    hc->last_byte_index = -1;
+    hc->next_byte_index = 0;
+    hc->keep_alive = 0;
+    hc->should_linger = 0;
+    hc->file_address = (char*) 0;
+    hc->stream_id = sid;
+    hc->is_sctp = 1;
+
+    return hc;
+    }
+
+#endif
+
+
 int
 httpd_get_conn( httpd_server* hs, int listen_fd, httpd_conn* hc, int is_sctp )
     {
     httpd_sockaddr sa;
     socklen_t sz;
+
+/*
 #ifdef USE_SCTP
     int sb_size;
     struct sctp_status status;
-#ifdef SCTP_EXPLICIT_EOR
+
+    struct sctp_event_subscribe ev_sctp;
+
     const int on = 1;
+
+    int recv_on = 1;
+    socklen_t on_size = sizeof(int);
 #endif
-#endif
+*/
 
     if ( ! hc->initialized )
 	{
@@ -1962,6 +2075,7 @@ httpd_get_conn( httpd_server* hs, int listen_fd, httpd_conn* hc, int is_sctp )
 	httpd_realloc_str( &hc->altdir, &hc->maxaltdir, 0 );
 #endif /* TILDE_MAP_2 */
 	hc->initialized = 1;
+	hc->next = NULL;
 	}
 
     /* Accept the new connection. */
@@ -1975,7 +2089,7 @@ httpd_get_conn( httpd_server* hs, int listen_fd, httpd_conn* hc, int is_sctp )
 	** it was waiting in the listen queue.  It's not worth logging.
 	*/
 	if ( errno != ECONNABORTED )
-	    syslog( LOG_ERR, "accept - %m" );
+	    syslog( LOG_ERR, "accept" );
 	return GC_FAIL;
 	}
     if ( ! sockaddr_check( &sa ) )
@@ -2032,32 +2146,63 @@ httpd_get_conn( httpd_server* hs, int listen_fd, httpd_conn* hc, int is_sctp )
     hc->tildemapped = 0;
     hc->first_byte_index = 0;
     hc->last_byte_index = -1;
+
+    hc->next_byte_index = 0;
+
     hc->keep_alive = 0;
     hc->should_linger = 0;
     hc->file_address = (char*) 0;
 #ifdef USE_SCTP
     hc->is_sctp = is_sctp;
+    hc->stream_id = 0;
+#endif
+        /*
     if ( is_sctp )
 	{
 	sz = (socklen_t)sizeof(struct sctp_status);
 	if ( getsockopt(hc->conn_fd, IPPROTO_SCTP, SCTP_STATUS, &status, &sz) < 0 )
 	    {
-	    syslog( LOG_CRIT, "getsockopt SCTP_STATUS - %m" );
+	    syslog( LOG_CRIT, "getsockopt SCTP_STATUS" );
 	    close( hc->conn_fd );
 	    hc->conn_fd = -1;
 	    return GC_FAIL;
 	    }
 	hc->no_i_streams = status.sstat_instrms;
 	hc->no_o_streams = status.sstat_outstrms;
+	
 	sz = (socklen_t)sizeof(int);
 	if ( getsockopt(hc->conn_fd, SOL_SOCKET, SO_SNDBUF, &sb_size, &sz) < 0 )
 	    {
-	    syslog( LOG_CRIT, "getsockopt SO_SNDBUF - %m" );
+	    syslog( LOG_CRIT, "getsockopt SO_SNDBUF" );
 	    close( hc->conn_fd );
 	    hc->conn_fd = -1;
 	    return GC_FAIL;
 	    }
 	hc->send_at_once_limit = sb_size / 4;
+	*/
+
+	/*
+	syslog( LOG_NOTICE, "setting SCTP_RECVRCVINFO to 1" );
+	recv_on = 1;
+	on_size = sizeof(recv_on);
+	if ( setsockopt(hc->conn_fd, IPPROTO_SCTP, SCTP_RECVRCVINFO, &recv_on, on_size) <  0)
+	    {
+	    syslog ( LOG_NOTICE, "setsockopt SCTP_RECVRCVINFO - %m" );
+	    close( hc->conn_fd );
+	    hc->conn_fd = -1;
+	    return GC_FAIL;
+	    }
+
+	memset(&ev_sctp, 0, sizeof(ev_sctp));
+	ev_sctp.sctp_data_io_event = 1;
+
+	if ( setsockopt(hc->conn_fd, IPPROTO_SCTP, SCTP_EVENTS, &ev_sctp, sizeof(ev_sctp)) <  0)
+	    {
+	    syslog ( LOG_NOTICE, "setsockopt SCTP_EVENTS - %m" );
+	    close( hc->conn_fd );
+	    hc->conn_fd = -1;
+	    return GC_FAIL;
+	    }
 #ifdef SCTP_EXPLICIT_EOR
 	sz = (socklen_t)sizeof(int);
 	if ( setsockopt(hc->conn_fd, IPPROTO_SCTP, SCTP_EXPLICIT_EOR, &on, sz) < 0 )
@@ -2080,6 +2225,7 @@ httpd_get_conn( httpd_server* hs, int listen_fd, httpd_conn* hc, int is_sctp )
 	hc->use_eeor = 0;
 	}
 #endif
+	*/
     return GC_OK;
     }
 
@@ -3029,7 +3175,7 @@ ls( httpd_conn* hc )
     dirp = opendir( hc->expnfilename );
     if ( dirp == (DIR*) 0 )
 	{
-	syslog( LOG_ERR, "opendir %.80s - %m", hc->expnfilename );
+	syslog( LOG_ERR, "opendir %.80s", hc->expnfilename );
 	httpd_send_err( hc, 404, err404title, "", err404form, hc->encodedurl );
 	return -1;
 	}
@@ -3055,7 +3201,7 @@ ls( httpd_conn* hc )
 	r = fork( );
 	if ( r < 0 )
 	    {
-	    syslog( LOG_ERR, "fork - %m" );
+	    syslog( LOG_ERR, "fork" );
 	    closedir( dirp );
 	    httpd_send_err(
 		hc, 500, err500title, "", err500form, hc->encodedurl );
@@ -3250,7 +3396,7 @@ mode  links    bytes  last-changed  name\n\
 	    if ( hc->is_sctp )
 		{
 		const char *trailer = "    </pre>\n  </body>\n</html>\n";
-		(void) httpd_write_sctp( hc->conn_fd, trailer, strlen(trailer), hc->use_eeor, 1, 0, 0 );
+		(void) httpd_write_sctp( hc->conn_fd, trailer, strlen(trailer), hc->assocp->use_eeor, 1, 0, 0 );
 		}
 	    else
 		(void) dprintf( hc->conn_fd, "    </pre>\n  </body>\n</html>\n" );
@@ -3718,13 +3864,13 @@ cgi_interpose_output( httpd_conn* hc, int rfd )
 		    eor = 0;
 		(void) my_snprintf( buf2, BUFSIZE, "HTTP/1.0 %d %s\015\012", status, title );
 		(void) httpd_write_fully_sctp( hc->conn_fd, buf2, strlen( buf2 ),
-		                               hc->use_eeor, eor, hc->send_at_once_limit );
+		                               hc->assocp->use_eeor, eor, hc->assocp->send_at_once_limit );
 		if ( r == 0 )
 		    eor = 1;
 		else
 		    eor = 0;
 		(void) httpd_write_fully_sctp( hc->conn_fd, headers, headers_len,
-		                               hc->use_eeor, eor, hc->send_at_once_limit );
+		                               hc->assocp->use_eeor, eor, hc->assocp->send_at_once_limit );
 		headers_written = 1;
 		}
 	    if ( r <= 0 )
@@ -3734,15 +3880,15 @@ cgi_interpose_output( httpd_conn* hc, int rfd )
 		if (buf == buf1)
 		    {
 		    if ( httpd_write_fully_sctp( hc->conn_fd, buf2, r2,
-		                                 hc->use_eeor, 0,
-		                                 hc->send_at_once_limit ) != r2 )
+		                                 hc->assocp->use_eeor, 0,
+		                                 hc->assocp->send_at_once_limit ) != r2 )
 			break;
 		    }
 		else
 		    {
 		    if ( httpd_write_fully_sctp( hc->conn_fd, buf1, r1,
-		                                 hc->use_eeor, 0,
-		                                 hc->send_at_once_limit ) != r1 )
+		                                 hc->assocp->use_eeor, 0,
+		                                 hc->assocp->send_at_once_limit ) != r1 )
 			break;
 		    }
 		buffer_cached = 0;
@@ -3763,12 +3909,12 @@ cgi_interpose_output( httpd_conn* hc, int rfd )
 	    {
 	    if ( buf == buf1 )
 		(void)httpd_write_fully_sctp( hc->conn_fd, buf2, r2,
-		                              hc->use_eeor, 1,
-		                              hc->send_at_once_limit );
+		                              hc->assocp->use_eeor, 1,
+		                              hc->assocp->send_at_once_limit );
 	    else
 		(void)httpd_write_fully_sctp( hc->conn_fd, buf1, r1,
-		                              hc->use_eeor, 1,
-		                              hc->send_at_once_limit );
+		                              hc->assocp->use_eeor, 1,
+		                              hc->assocp->send_at_once_limit );
 	    }
 	}
     else
@@ -3880,7 +4026,7 @@ cgi_child( httpd_conn* hc )
 
 	if ( pipe( p ) < 0 )
 	    {
-	    syslog( LOG_ERR, "pipe - %m" );
+	    syslog( LOG_ERR, "pipe" );
 	    httpd_send_err( hc, 500, err500title, "", err500form, hc->encodedurl );
 	    httpd_write_response( hc );
 	    exit( 1 );
@@ -3888,7 +4034,7 @@ cgi_child( httpd_conn* hc )
 	r = fork( );
 	if ( r < 0 )
 	    {
-	    syslog( LOG_ERR, "fork - %m" );
+	    syslog( LOG_ERR, "fork" );
 	    httpd_send_err( hc, 500, err500title, "", err500form, hc->encodedurl );
 	    httpd_write_response( hc );
 	    exit( 1 );
@@ -3925,7 +4071,7 @@ cgi_child( httpd_conn* hc )
 
 	if ( pipe( p ) < 0 )
 	    {
-	    syslog( LOG_ERR, "pipe - %m" );
+	    syslog( LOG_ERR, "pipe" );
 	    httpd_send_err( hc, 500, err500title, "", err500form, hc->encodedurl );
 	    httpd_write_response( hc );
 	    exit( 1 );
@@ -3933,7 +4079,7 @@ cgi_child( httpd_conn* hc )
 	r = fork( );
 	if ( r < 0 )
 	    {
-	    syslog( LOG_ERR, "fork - %m" );
+	    syslog( LOG_ERR, "fork" );
 	    httpd_send_err( hc, 500, err500title, "", err500form, hc->encodedurl );
 	    httpd_write_response( hc );
 	    exit( 1 );
@@ -4012,7 +4158,7 @@ cgi_child( httpd_conn* hc )
     (void) execve( binary, argp, envp );
 
     /* Something went wrong. */
-    syslog( LOG_ERR, "execve %.80s - %m", hc->expnfilename );
+    syslog( LOG_ERR, "execve %.80s", hc->expnfilename );
     httpd_send_err( hc, 500, err500title, "", err500form, hc->encodedurl );
     httpd_write_response( hc );
     _exit( 1 );
@@ -4039,7 +4185,7 @@ cgi( httpd_conn* hc )
 	r = fork( );
 	if ( r < 0 )
 	    {
-	    syslog( LOG_ERR, "fork - %m" );
+	    syslog( LOG_ERR, "fork" );
 	    httpd_send_err(
 		hc, 500, err500title, "", err500form, hc->encodedurl );
 	    return -1;

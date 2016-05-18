@@ -49,6 +49,7 @@
 
 #define FDW_READ 0
 #define FDW_WRITE 1
+#define FDW_RW 2
 
 #ifndef INFTIM
 #define INFTIM -1

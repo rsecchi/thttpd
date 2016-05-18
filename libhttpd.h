@@ -73,6 +73,9 @@ typedef union {
 #endif /* USE_IPV6 */
     } httpd_sockaddr;
 
+
+
+
 /* A server. */
 typedef struct {
     char* binding_hostname;
@@ -96,11 +99,15 @@ typedef struct {
     char* url_pattern;
     char* local_pattern;
     int no_empty_referrers;
+    int keep_alive;
     } httpd_server;
 
 /* A connection. */
+struct httpd_conn;
+struct sctp_assoc;
 typedef struct {
     int initialized;
+    int conn_state;
     httpd_server* hs;
     httpd_sockaddr client_addr;
     char* read_buf;
@@ -148,19 +155,34 @@ typedef struct {
     int got_range;
     int tildemapped;	/* this connection got tilde-mapped */
     off_t first_byte_index, last_byte_index;
+    off_t end_byte_index, next_byte_index;
     int keep_alive;
     int should_linger;
     struct stat sb;
     int conn_fd;
 #ifdef USE_SCTP
     int is_sctp;
+    struct sctp_assoc* assocp;
+    int stream_id;
+#endif
+    char* file_address;
+    struct httpd_conn* next;
+    } httpd_conn;
+
+
+
+#ifdef USE_SCTP
+struct sctp_assoc {
+    int fd;
+    httpd_sockaddr caddr;
     unsigned int no_i_streams;
     unsigned int no_o_streams;
     size_t send_at_once_limit;
     int use_eeor;
+
+};
 #endif
-    char* file_address;
-    } httpd_conn;
+
 
 /* Methods. */
 #define METHOD_UNKNOWN 0
@@ -192,7 +214,7 @@ httpd_server* httpd_initialize(
     unsigned short port, char* cgi_pattern, int cgi_limit, char* charset,
     char* p3p, int max_age, char* cwd, int no_log, FILE* logfp,
     int no_symlink_check, int vhost, int global_passwd, char* url_pattern,
-    char* local_pattern, int no_empty_referrers );
+    char* local_pattern, int no_empty_referrers, int keep_alive );
 
 /* Change the log file. */
 void httpd_set_logfp( httpd_server* hs, FILE* logfp );
@@ -218,6 +240,12 @@ int httpd_get_conn(
 #define GC_FAIL 0
 #define GC_OK 1
 #define GC_NO_MORE 2
+
+#ifdef USE_SCTP
+httpd_conn* 
+httpd_get_stream( httpd_server* hs, struct sctp_assoc* ap, int sid );
+#endif
+
 
 /* Checks whether the data in hc->read_buf constitutes a complete request
 ** yet.  The caller reads data into hc->read_buf[hc->read_idx] and advances

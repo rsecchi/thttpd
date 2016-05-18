@@ -583,6 +583,7 @@ poll_add_fd( int fd, int rw )
 	{
 	case FDW_READ: pollfds[npoll_fds].events = POLLIN; break;
 	case FDW_WRITE: pollfds[npoll_fds].events = POLLOUT; break;
+	case FDW_RW: pollfds[npoll_fds].events = POLLIN | POLLOUT; break;
 	default: break;
 	}
     poll_fdidx[fd] = npoll_fds;
@@ -647,6 +648,7 @@ poll_check_fd( int fd )
 	{
 	case FDW_READ: return pollfds[fdidx].revents & ( POLLIN | POLLHUP | POLLNVAL );
 	case FDW_WRITE: return pollfds[fdidx].revents & ( POLLOUT | POLLHUP | POLLNVAL );
+	case FDW_RW: return pollfds[fdidx].revents & (POLLIN | POLLOUT | POLLHUP | POLLNVAL );
 	default: return 0;
 	}
     }
