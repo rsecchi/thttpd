@@ -14,7 +14,7 @@ if test "$GCC" = yes ; then
 		sed -e 's/\..*//'`)
 	AC_MSG_RESULT($ac_cv_lbl_gcc_vers)
 	if test "$ac_cv_lbl_gcc_vers" -gt 1 ; then
-		V_CCOPT="-O0"
+		V_CCOPT="-g -O0"
 	fi
 fi
 if test -f .devel ; then

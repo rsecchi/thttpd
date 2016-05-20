@@ -1943,11 +1943,19 @@ handle_send( connecttab* c, struct timeval* tvP )
 
 #ifdef USE_SCTP
 #ifdef SCTP_SNDINFO
-    char cmsgbuf[CMSG_SPACE(sizeof(struct sctp_sndinfo))];
+
+    sz = CMSG_SPACE(sizeof(struct sctp_sndinfo));
+    char cmsgbuf[sz];
     struct sctp_sndinfo *sndinfo;
+    bzero(&cmsgbuf, sz);
+
 #else
-    char cmsgbuf[CMSG_SPACE(sizeof(struct sctp_sndrcvinfo))];
+    sz = CMSG_SPACE(sizeof(struct sctp_sndrcvinfo));
+    char cmsgbuf[sz];
     struct sctp_sndrcvinfo *sndrcvinfo;
+    bzero(&cmsgbuf, sz);
+
+
 #endif
 #endif
 
@@ -2348,9 +2356,7 @@ clear_connection( connecttab* c, struct timeval* tvP )
 	    }
 	}
     else
-
 	really_clear_connection( c, tvP );
-
     }
 
 
@@ -2370,6 +2376,36 @@ really_clear_connection( connecttab* c, struct timeval* tvP )
     c->conn_state = CNST_FREE;
     c->next_free_connect = first_free_connect;
     first_free_connect = c - connects;	/* division by sizeof is implied */
+
+#ifdef USE_SCTP
+    httpd_conn *work, *hc;
+    
+    hc = c->hc;
+    while(hc!=NULL) {
+	work = hc;
+	hc = hc->next;
+
+	/* free all the strings */
+	free(work->decodedurl);
+	free(work->origfilename);
+	free(work->expnfilename);
+	free(work->encodings);
+	free(work->pathinfo);
+	free(work->query);
+	free(work->accept);
+	free(work->accepte);
+	free(work->hostdir);
+	free(work->remoteuser);
+	free(work->response);
+#ifdef TILDE_MAP_2
+	free(work->altdir);
+#endif
+
+	free(work);
+    }
+    c->hc = NULL;
+#endif
+
     --num_connects;
     }
 
