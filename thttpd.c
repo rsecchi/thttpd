@@ -1924,13 +1924,13 @@ handle_send( connecttab* c, struct timeval* tvP )
 #ifdef USE_SCTP
 
     /* scanning to find a stream in sending state */
-    while( hc != NULL ) {
+    while( hc->is_sctp &&  hc != NULL ) {
        if (hc->conn_state == CNST_SENDING)
           break;
        hc = hc->next;
     }
     
-    if ( hc == NULL ) {
+    if ( hc->is_sctp && hc == NULL ) {
          /* should not happen */
          syslog(LOG_CRIT, "handle_send called without stream in sending state");
 	 fdwatch_del_fd(c->hc->conn_fd);

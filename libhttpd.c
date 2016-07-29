@@ -4875,9 +4875,11 @@ httpd_write_sctp( int fd, const char * buf, size_t nbytes,
 #ifdef SCTP_SNDINFO
     char cmsgbuf[CMSG_SPACE(sizeof(struct sctp_sndinfo))];
     struct sctp_sndinfo *sndinfo;
+    bzero(cmsgbuf, CMSG_SPACE(sizeof(struct sctp_sndinfo)));
 #else
     char cmsgbuf[CMSG_SPACE(sizeof(struct sctp_sndrcvinfo))];
     struct sctp_sndrcvinfo *sndrcvinfo;
+    bzero(cmsgbuf, CMSG_SPACE(sizeof(struct sctp_sndrcvinfo)));
 #endif
 
     iov.iov_base = (void *)buf;
