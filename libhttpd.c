@@ -2148,8 +2148,7 @@ httpd_get_conn( httpd_server* hs, int listen_fd, httpd_conn* hc, int is_sctp )
     hc->last_byte_index = -1;
 
     hc->next_byte_index = 0;
-
-    hc->keep_alive = 0;
+    hc->keep_alive = hc->hs->keep_alive;
     hc->should_linger = 0;
     hc->file_address = (char*) 0;
 #ifdef USE_SCTP

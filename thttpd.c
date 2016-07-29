@@ -1042,7 +1042,7 @@ static void
 usage( void )
     {
     (void) fprintf( stderr,
-"usage:  %s [-C configfile] [-p port] [-d dir] [-r|-nor] [-dd data_dir] [-s|-nos] [-v|-nov] [-g|-nog] [-u user] [-c cgipat] [-t throttles] [-h host] [-l logfile] [-i pidfile] [-T charset] [-P P3P] [-M maxage] [-V] [-D]\n",
+"usage:  %s [-a] [-C configfile] [-p port] [-d dir] [-r|-nor] [-dd data_dir] [-s|-nos] [-v|-nov] [-g|-nog] [-u user] [-c cgipat] [-t throttles] [-h host] [-l logfile] [-i pidfile] [-T charset] [-P P3P] [-M maxage] [-V] [-D]\n",
 	argv0 );
     exit( 1 );
     }
@@ -1708,12 +1708,19 @@ static void
 handle_idle( connecttab* c, struct timeval* tvP )
     {
 
+	httpd_conn* hc = c->hc;
+
 	syslog(LOG_NOTICE, "New data when in CNST_IDLE\n");
 	c->conn_state = CNST_READING;
 	
 	c->hc->read_idx = 0;
 	c->hc->checked_idx = 0;
-	handle_read( c, tvP);
+
+	/* See if connection has been closed by client */
+	if (recv(hc->conn_fd, hc->read_buf, hc->read_size, MSG_PEEK) == 0)
+		finish_connection( c, tvP );
+	else 
+		handle_read( c, tvP);
 
     }
 
@@ -2113,7 +2120,7 @@ handle_send( connecttab* c, struct timeval* tvP )
     if ( hc->next_byte_index >= hc->end_byte_index )
 	{
 	/* This connection is finished! */
-	if (persistent) {	
+	if (persistent) {
 
 		/* reset connection */
 		c->conn_state = CNST_IDLE;
@@ -2136,7 +2143,6 @@ handle_send( connecttab* c, struct timeval* tvP )
 				}
 			}
 		}
-
 
 	} else
 		finish_connection( c, tvP );

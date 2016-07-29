@@ -3,6 +3,8 @@
 thttpd - tiny/turbo/throttling HTTP server
 .SH SYNOPSIS
 .B thttpd
+.RB [ -a ]
+.RB [ -b ]
 .RB [ -C
 .IR configfile ]
 .RB [ -p
@@ -45,6 +47,10 @@ Netscape),
 and it has one extremely useful feature (URL-traffic-based throttling)
 that no other server currently has.
 .SH OPTIONS
+.TP
+.B -a
+Enables persistent TCP/SCTP in the server. It avoids the server closing the connection
+when the client does not sent an explicit Keep-Alive HTTP header.
 .TP
 .B -C
 Specifies a config-file to read.
