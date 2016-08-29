@@ -179,6 +179,7 @@ static void show_stats( ClientData client_data, struct timeval* nowP );
 #endif /* STATS_TIME */
 static void logstats( struct timeval* nowP );
 static void thttpd_logstats( long secs );
+static void keep_connection( connecttab*c, httpd_conn* hc);
 
 
 /* SIGTERM and SIGINT say to exit immediately. */
@@ -1780,7 +1781,10 @@ handle_read( connecttab* c, struct timeval* tvP )
 	if ( hc->read_size > 5000 )
 	    {
 	    httpd_send_err( hc, 400, httpd_err400title, "", httpd_err400form, "" );
-	    finish_connection( c, tvP );
+            if (persistent)
+	        keep_connection(c, hc);
+            else
+	        finish_connection( c, tvP );
 	    return;
 	    }
 	httpd_realloc_str(
@@ -1860,7 +1864,10 @@ handle_read( connecttab* c, struct timeval* tvP )
     if ( httpd_start_request( hc, tvP ) < 0 )
 	{
 	/* Something went wrong.  Close down the connection. */
-	finish_connection( c, tvP );
+	if (persistent) {
+		keep_connection( c, hc);
+	} else
+		finish_connection( c, tvP );
 	return;
 	}
 
@@ -1913,6 +1920,39 @@ handle_read( connecttab* c, struct timeval* tvP )
     
     }
 
+static void
+keep_connection( connecttab*c, httpd_conn* hc)
+    {
+    httpd_conn* w;
+
+	httpd_clear_ndelay( hc->conn_fd );
+	httpd_write_response(hc);
+
+	/* reset connection */
+	c->conn_state = CNST_IDLE;
+
+	/* fdwath for reading */
+	hc->next_byte_index  = 0;
+	hc->read_idx = 0;
+	hc->checked_idx = 0;
+	fdwatch_del_fd(c->hc->conn_fd);
+	fdwatch_add_fd(c->hc->conn_fd, c, FDW_READ);
+
+#ifdef USE_SCTP
+	if (hc->is_sctp) {
+		/* Reset stream */
+		hc->conn_state = CNST_IDLE;
+		for(w = c->hc; w != NULL; w = w->next ) {
+			if (w->conn_state == CNST_SENDING) {
+				fdwatch_del_fd(w->conn_fd);
+				fdwatch_add_fd(w->conn_fd, c, FDW_RW);
+				break;
+			}
+		}
+	}
+#endif
+
+    }
 
 static void
 handle_send( connecttab* c, struct timeval* tvP )
@@ -2121,29 +2161,7 @@ handle_send( connecttab* c, struct timeval* tvP )
 	{
 	/* This connection is finished! */
 	if (persistent) {
-
-		/* reset connection */
-		c->conn_state = CNST_IDLE;
-
-		/* fdwath for reading */
-		hc->next_byte_index  = 0;
-		hc->read_idx = 0;
-		hc->checked_idx = 0;
-		fdwatch_del_fd(c->hc->conn_fd);
-		fdwatch_add_fd(c->hc->conn_fd, c, FDW_READ);
-
-		if (hc->is_sctp) {
-			/* Reset stream */
-			hc->conn_state = CNST_IDLE;
-			for(w = c->hc; w != NULL; w = w->next ) {
-				if (w->conn_state == CNST_SENDING) {
-					fdwatch_del_fd(w->conn_fd);
-					fdwatch_add_fd(w->conn_fd, c, FDW_RW);
-					break;
-				}
-			}
-		}
-
+		keep_connection( c, hc);
 	} else
 		finish_connection( c, tvP );
 	return;
