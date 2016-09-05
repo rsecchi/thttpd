@@ -179,7 +179,7 @@ static void show_stats( ClientData client_data, struct timeval* nowP );
 #endif /* STATS_TIME */
 static void logstats( struct timeval* nowP );
 static void thttpd_logstats( long secs );
-static void keep_connection( connecttab*c, httpd_conn* hc);
+static void keep_connection( connecttab* c, httpd_conn* hc);
 
 
 /* SIGTERM and SIGINT say to exit immediately. */
@@ -415,6 +415,7 @@ main( int argc, char** argv )
     /* If we're root and we're going to become another user, get the uid/gid
     ** now.
     */
+
     if ( getuid() == 0 )
 	{
 	pwd = getpwnam( user );
@@ -1921,7 +1922,7 @@ handle_read( connecttab* c, struct timeval* tvP )
     }
 
 static void
-keep_connection( connecttab*c, httpd_conn* hc)
+keep_connection( connecttab* c, httpd_conn* hc)
     {
     httpd_conn* w;
 

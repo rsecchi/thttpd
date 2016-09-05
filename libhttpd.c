@@ -994,6 +994,7 @@ static void
 send_response( httpd_conn* hc, int status, char* title, char* extraheads, char* form, char* arg )
     {
     char defanged_arg[1000], buf[2000];
+
     (void) my_snprintf( buf, sizeof(buf), "\
 <!DOCTYPE html PUBLIC \"-//W3C//DTD HTML 4.01 Transitional//EN\" \"http://www.w3.org/TR/html4/loose.dtd\">\n\
 \n\
@@ -1023,8 +1024,9 @@ send_response( httpd_conn* hc, int status, char* title, char* extraheads, char* 
     send_response_tail( hc );
 
     /* Raffaello: fixing Content-Length */
-    strcpy(buf, hc->response);
+    memcpy(buf, hc->response, hc->responselen);
     int buflen = hc->responselen;
+    buf[buflen] = '\0';
     hc->responselen = 0;
     send_mime(
 	hc, status, title, "", extraheads, "text/html; charset=%s", buflen,
